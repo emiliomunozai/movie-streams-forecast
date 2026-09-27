@@ -1,4 +1,4 @@
-# One image for local runs, SageMaker Processing and HF Spaces.
+# One image for local runs, SageMaker Processing and the live demo (Render).
 FROM python:3.13-slim
 RUN pip install --no-cache-dir uv==0.12.1  # from PyPI: one registry fewer to reach at build time
 
@@ -13,6 +13,8 @@ COPY artifacts artifacts
 COPY data data
 COPY src src
 
-# Default = the UI on 7860 (HF Spaces). Batch: `docker run <image> predict ...` (what SageMaker passes).
+# Default = the UI on $PORT (hosts like Render set it; 7860 otherwise).
+# Batch: `docker run <image> predict ...` (what SageMaker passes).
+ENV PORT=7860
 ENTRYPOINT ["python", "-m", "src.cli"]
-CMD ["ui", "--port", "7860"]
+CMD ["ui"]

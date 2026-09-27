@@ -108,7 +108,7 @@ def evaluate(
 
 
 @app.command()
-def ui(port: int = 8501):
+def ui(port: Annotated[int, typer.Option(envvar="PORT", help="Also read from $PORT (Render, Cloud Run).")] = 8501):
     """Launch the Streamlit app (predictions + ModelOps dashboard)."""
     os.execv(sys.executable, [sys.executable, "-m", "streamlit", "run", str(ROOT / "src/app.py"),
                               "--server.port", str(port), "--server.address", "0.0.0.0", "--browser.gatherUsageStats", "false"])

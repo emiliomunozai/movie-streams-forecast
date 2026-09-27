@@ -105,7 +105,7 @@ docs/             brief, architecture, tools, checklist, AI log
 Built with **Claude Code** (Anthropic, Claude Opus 5.5) as a pair programmer in the terminal:
 
 - **What the AI did:** read the brief and notebook, profiled the data, proposed options with trade-offs, and wrote the code, tests, Dockerfile, Terraform and docs.
-- **What I decided,** after discussing the options: the design (one core, CLI + UI, one image), the month-agnostic behaviour, a separate pluggable checks module, Typer, Streamlit on HF Spaces, and Docker Desktop.
+- **What I decided,** after discussing the options: the design (one core, CLI + UI, one image), the month-agnostic behaviour, a separate pluggable checks module, Typer, a Streamlit dashboard with monthly accuracy tracking, and Render for the live demo.
 - **How it was checked:** tests, deliberate-bug checks, a fresh-clone run, Docker runs on arm64 and amd64, a simulated SageMaker folder layout, and mocked Terraform tests.
 
 Every decision, finding and proof is recorded in order in [`docs/AI_LOG.md`](docs/AI_LOG.md).

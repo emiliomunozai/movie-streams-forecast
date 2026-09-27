@@ -12,7 +12,7 @@ flowchart TB
     UI["UI (Streamlit)<br/>upload / sample → table, download, ModelOps"] --> core
     CLI & UI --> IMG[["one Docker image"]]
     IMG --> AWS["AWS: monthly batch (required)"]
-    IMG --> HF["HF Spaces: live demo URL"]
+    IMG --> HF["Render: live demo URL"]
     IMG --> LOCAL["local: uv / docker run"]
 ```
 
@@ -71,9 +71,10 @@ flowchart LR
 
 **Unverified without an AWS account**: the exact pipeline-definition JSON, IAM policy completeness, and the S3 → EventBridge → pipeline wiring end to end. How to validate: `terraform validate`/`plan`, then one manual upload in a sandbox account.
 
-## HF Spaces: live demo
-- Docker Space, same image, entrypoint `streamlit` on port 7860. The model and sample data are baked into the image (7 MB).
-- Deployed by pushing the repo to the Space's git remote. Free CPU tier; it sleeps when idle.
+## Live demo: Render
+- A free Render web service built from the repo's `Dockerfile`: the same image as local and SageMaker, default command `ui`, listening on `$PORT` (set by Render).
+- Redeploys automatically on every push to `main`. The free tier sleeps when idle, so the first request takes ~30–60 s.
+- Hugging Face Spaces was the first choice, but Docker Spaces now need a PRO subscription (found at deploy time).
 
 ## ModelOps
 - **Data quality:** row counts, nulls, negative values, duplicate keys, movie IDs without metadata.
