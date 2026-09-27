@@ -33,4 +33,4 @@ Ordered by what the brief evaluates: correctness → engineering → AWS → Ter
 - [x] Streamlit app: upload or sample data → predictions table + download
 - [x] ModelOps dashboard: data quality, drift vs training, predicted vs input
 - [x] Accuracy by month: `cli evaluate` + Evaluate pipeline step + dashboard history (seeded with v1 holdout)
-- [ ] Push to GitHub, deploy on Render (HF Docker Spaces need PRO), add the live URL to README
+- [x] Push to GitHub, deploy on Render (HF Docker Spaces need PRO), add the live URL to README

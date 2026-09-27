@@ -1,22 +1,27 @@
 # Architecture
 
-## Principle: one core, two entrypoints, one image
+## Principle: hexagonal-lite (one core, thin adapters, one image)
 
 ```mermaid
 flowchart TB
-    subgraph core["src/pipeline.py: the only business logic"]
+    subgraph core["Core: pure functions on DataFrames + a model (no AWS, no UI, no paths)"]
         direction LR
-        A["read + validate"] --> B["aggregate May per<br/>TITLE_ID × country × platform"] --> C["join movie metadata"] --> D["features in schema order"] --> E["model.predict"] --> F["predictions + summary"]
+        K["checks.py<br/>validate raw files"] --> P["pipeline.py<br/>aggregate month per grain → join movies<br/>→ features in schema order → predict"]
+        P --> M["monitoring.py<br/>drift vs training · score vs actuals"]
     end
-    CLI["CLI (Typer)<br/>predict: files → CSV + summary.json"] --> core
-    UI["UI (Streamlit)<br/>upload / sample → table, download, ModelOps"] --> core
+    CLI["CLI (Typer)<br/>check · predict · evaluate · ui"] --> core
+    UI["UI (Streamlit)<br/>predictions · ModelOps dashboard"] --> core
+    T["tests"] --> core
     CLI & UI --> IMG[["one Docker image"]]
-    IMG --> AWS["AWS: monthly batch (required)"]
-    IMG --> HF["Render: live demo URL"]
+    IMG --> AWS["AWS SageMaker: monthly batch"]
+    IMG --> WEB["Render: live demo"]
     IMG --> LOCAL["local: uv / docker run"]
 ```
 
-The batch job and the live app share the same code, so they can't drift apart. Any Docker host can run the image.
+- **The core** (`checks.py`, `pipeline.py`, `monitoring.py`) takes DataFrames and a model and returns DataFrames and dicts. It doesn't know where data comes from.
+- **Driving adapters** (the CLI, the Streamlit UI and the tests) call the core, so the batch job and the live app can't drift apart.
+- **The runtime contract** is "files in folders + a CLI command". SageMaker meets it by mounting S3 as folders, and AWS Batch, ECS, Cloud Run Jobs or Airflow would meet it the same way. **Changing platform changes Terraform, not Python.**
+- **No formal port interfaces:** there's one storage kind (files), so an abstraction would be speculative. A second source (e.g. a database) would get its own reader module, and the core wouldn't change.
 
 ## Local
 `uv run python -m src.cli check` (validate only) / `uv run python -m src.cli predict …` or `docker run <image> predict …`. `uv run python -m src.cli ui` for the UI (the image's default command).

@@ -3,8 +3,12 @@
 Batch inference for the **Movie Consumption Prediction Challenge**. It uses the supplied model to predict
 **June 2026 streams per movie × country × platform** from raw May 2026 consumption and movie metadata.
 It reproduces the notebook's data preparation and never refits or retrains anything.
+Monthly in production: each new consumption file triggers the prediction for next month **and** scores last month's predictions against it.
 
 **Deliverable:** [`output/predictions.csv`](output/predictions.csv) (321 rows) + [`output/summary.json`](output/summary.json)
+
+**Live demo:** https://movie-streams-forecast.onrender.com (predictions + ModelOps dashboard; free tier, so the first load after idle takes ~1 min).
+Try it: use the sample data, or choose *Upload CSVs* with `data/inference_movies.csv` and `data/inference_consumption.csv`.
 
 ## Quickstart
 
@@ -66,17 +70,18 @@ docker run --rm movie-streams-forecast check
 ```
 src/checks.py     data checks (pluggable)
 src/pipeline.py   read → prepare → features → predict → summary
-src/cli.py        Typer CLI: check, predict, ui
+src/cli.py        Typer CLI: check, predict, evaluate, ui
 src/app.py        Streamlit UI (adapter over the same pipeline)
 src/monitoring.py drift vs training + scoring predictions against actuals
 artifacts/performance/  accuracy history, one JSON per evaluated month (seeded with the notebook's v1 holdout)
-tests/            checks + pipeline + CLI tests
+tests/            checks, pipeline, monitoring, CLI and app tests
+infra/            Terraform for AWS (+ mocked-provider tests)
 docs/             brief, architecture, tools, checklist, AI log
 ```
 
 ## Docs
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): AWS/SageMaker design and the live demo
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): **AWS/SageMaker architecture** (diagrams, one run step by step, decisions and why), code structure, ModelOps, and future retraining
 - [`infra/README.md`](infra/README.md): Terraform, how to check it without AWS, deploy steps, assumptions
 - [`docs/AI_LOG.md`](docs/AI_LOG.md): every decision, finding and proof, in order
 - [`docs/CHALLENGE.md`](docs/CHALLENGE.md): the brief, condensed
@@ -90,6 +95,7 @@ docs/             brief, architecture, tools, checklist, AI log
 - **Unseen categories** (a new country, platform or genre) are silently zeroed by the model's encoder. We report them in `summary.json`, but the model can't use them.
 - **Coverage.** Predictions exist only for movie × country × platform combinations with streams in the input month (as the brief asks).
 - **Pickle.** Only load it from a trusted source. It is tied to Python 3.13 and scikit-learn 1.8.0, hence the pinned image.
+- **The container runs as root.** Not yet verified whether SageMaker Processing's mounted folders are writable by a non-root user, so this stays until it's tested in a sandbox.
 - **AWS is untested end to end.** Terraform passes `validate` and mocked tests. See [`infra/README.md`](infra/README.md#not-verified-without-an-account).
 
 ## With more time
