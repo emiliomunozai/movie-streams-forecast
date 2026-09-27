@@ -1,0 +1,16 @@
+[project]
+name = "movie-streams-forecast"
+version = "0.1.0"
+description = "Batch inference: predict June 2026 streams per movie x country x platform with the supplied model."
+requires-python = ">=3.13"
+dependencies = [
+    "pandas==2.2.3",
+    "numpy==2.3.5",
+    "scikit-learn==1.8.0",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv]
+package = false

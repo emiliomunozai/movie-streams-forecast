@@ -1,0 +1,47 @@
+{
+  "challenge": "Movie Consumption Prediction Challenge",
+  "prediction_grain": [
+    "TITLE_ID",
+    "country",
+    "platform"
+  ],
+  "prediction_target": "june_streams",
+  "input_features_in_order": [
+    "country",
+    "platform",
+    "primary_genre",
+    "may_streams",
+    "may_total_minutes",
+    "release_year",
+    "runtime_minutes",
+    "rating_value",
+    "rating_vote_count"
+  ],
+  "categorical_features": [
+    "country",
+    "platform",
+    "primary_genre"
+  ],
+  "numeric_features": [
+    "may_streams",
+    "may_total_minutes",
+    "release_year",
+    "runtime_minutes",
+    "rating_value",
+    "rating_vote_count"
+  ],
+  "input_month": "2026-05-01",
+  "target_month": "2026-06-01",
+  "model_artifact": "movie_consumption_model.pkl",
+  "scikit_learn_version": "1.8.0",
+  "python_version": "3.13.5",
+  "training_movies": 738,
+  "training_rows": 2005,
+  "notes": [
+    "TITLE_ID is a join/output key, never an estimator feature.",
+    "The model contains fitted preprocessing; do not fit any new encoder at inference.",
+    "June is never used to choose inference input rows.",
+    "Ratings and votes are assumed available at end-May for this exercise; the source has no capture timestamps.",
+    "Only load pickle files from a trusted source."
+  ]
+}
