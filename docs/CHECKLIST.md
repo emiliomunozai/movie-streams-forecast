@@ -21,7 +21,7 @@ Ordered by what the brief evaluates: correctness → engineering → AWS → Ter
 - [x] README: setup, run (uv + Docker), output (verified from a fresh clone)
 
 ## 3 · AWS (must)
-- [ ] Finalize `ARCHITECTURE.md` (resolve open points)
+- [x] Finalize `ARCHITECTURE.md` (open points resolved from AWS docs; SageMaker layout simulated in Docker)
 - [ ] `infra/` Terraform: S3, ECR, IAM roles, SageMaker Pipeline, EventBridge rule, SNS alarm
 - [ ] `terraform validate` + notes on what's unverified
 

@@ -1,4 +1,5 @@
 import json
+import shutil
 
 import pandas as pd
 import pytest
@@ -46,8 +47,15 @@ def test_reproduces_notebook_training_table():
 
 def test_other_months_are_ignored(predictions):
     june = CONSUMPTION.assign(month="2026-06-01", streams=1e6, total_minutes=1e8)
-    result = run(MOVIES, pd.concat([CONSUMPTION, june], ignore_index=True), MODEL)[0]
+    result = run(MOVIES, pd.concat([CONSUMPTION, june], ignore_index=True), MODEL, "2026-05-01")[0]
     pd.testing.assert_frame_equal(result, predictions)
+
+
+def test_month_is_inferred_only_when_unambiguous(predictions):
+    assert predictions["input_month"].eq("2026-05-01").all()  # inferred: the file only has May
+    two_months = pd.concat([CONSUMPTION, CONSUMPTION.assign(month="2026-06-01")], ignore_index=True)
+    with pytest.raises(ValueError, match="2 months, pass --month"):
+        run(MOVIES, two_months, MODEL)
 
 
 def test_same_month_rows_are_summed():
@@ -73,3 +81,15 @@ def test_cli(tmp_path):
     assert runner.invoke(app, ["predict", "--output-dir", str(tmp_path)]).exit_code == 0
     assert len(pd.read_csv(tmp_path / "predictions.csv")) == 321
     assert runner.invoke(app, ["predict", "--month", "2026-07", "--output-dir", str(tmp_path)]).exit_code == 1
+
+
+def test_cli_accepts_folders_like_sagemaker(tmp_path):
+    for name, source in [("movies", "data/inference_movies.csv"), ("consumption", "data/inference_consumption.csv"),
+                         ("model", "artifacts/movie_consumption_model.pkl")]:
+        (tmp_path / name).mkdir()
+        shutil.copy(source, tmp_path / name)
+    args = [f"--{name}={tmp_path / name}" for name in ("movies", "consumption", "model")]
+    result = CliRunner().invoke(app, ["predict", *args, f"--output-dir={tmp_path / 'out'}"])
+    assert result.exit_code == 0 and len(pd.read_csv(tmp_path / "out/predictions.csv")) == 321
+    shutil.copy("data/train_movies.csv", tmp_path / "movies")  # two files -> ambiguous
+    assert CliRunner().invoke(app, ["predict", *args, f"--output-dir={tmp_path / 'out'}"]).exit_code == 1

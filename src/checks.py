@@ -50,6 +50,14 @@ def validate(movies, consumption, month):
     return issues
 
 
+def infer_month(consumption):
+    """The only month in the file (monthly drops); raises if there are none or several."""
+    months = _months(consumption).dropna().unique() if "month" in consumption else []
+    if len(months) != 1:
+        raise ValueError(f"cannot infer the month: file has {len(months)} months, pass --month")
+    return pd.Timestamp(months[0]).strftime("%Y-%m-%d")
+
+
 def _rows(mask, what):
     """Message naming the CSV lines (header = line 1) where `mask` is true, or None."""
     if mask.any():

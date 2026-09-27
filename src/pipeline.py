@@ -8,7 +8,7 @@ import pickle
 
 import pandas as pd
 
-from src.checks import ERROR, MOVIE_COLUMNS, validate
+from src.checks import ERROR, MOVIE_COLUMNS, infer_month, validate
 
 log = logging.getLogger(__name__)
 GRAIN = ["TITLE_ID", "country", "platform"]
@@ -70,9 +70,12 @@ def unseen_categories(model, features):
     }
 
 
-def run(movies_raw, consumption_raw, model, month="2026-05-01"):
-    """Checks + full pipeline on raw frames. Returns (predictions, summary); raises ValueError on failed checks."""
-    month = pd.Timestamp(month).strftime("%Y-%m-%d")
+def run(movies_raw, consumption_raw, model, month=None):
+    """Checks + full pipeline on raw frames. Returns (predictions, summary); raises ValueError on failed checks.
+
+    month: input month to predict from; default = the only month in the consumption file.
+    """
+    month = pd.Timestamp(month).strftime("%Y-%m-%d") if month else infer_month(consumption_raw)
     issues = validate(movies_raw, consumption_raw, month)
     errors = [issue["check"] for issue in issues if issue["severity"] == ERROR]
     if errors:

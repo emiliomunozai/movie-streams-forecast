@@ -25,34 +25,47 @@ The batch job and the live app share the same code, so they can't drift apart. A
 
 ```mermaid
 flowchart LR
-    UP["upstream"] -->|"input/YYYY-MM/<br/>consumption.csv, movies.csv"| S3IN[("S3 input/")]
-    S3IN -->|"Object Created"| EB["EventBridge rule"]
-    EB -->|"StartPipelineExecution"| PIPE
+    UP["upstream"] -->|"monthly drop<br/>consumption/2026-05.csv"| S3C[("S3 consumption/")]
+    S3C -->|"Object Created"| EB["EventBridge rule<br/>prefix consumption/"]
+    EB -->|"StartPipelineExecution<br/>InputKey = $.detail.object.key"| PIPE
     subgraph PIPE["SageMaker Pipeline"]
-        PJ["Processing Job<br/>ECR image :git-sha<br/>runs: predict"]
+        PJ["Processing Job · ml.t3.medium<br/>image: ECR :git-sha (linux/amd64)<br/>cli predict"]
     end
     ECR[("ECR<br/>movie-streams-forecast")] -.->|image| PJ
-    MOD[("S3 models/vN/<br/>versioned")] -.->|model.pkl| PJ
-    PJ -->|"predictions.csv<br/>summary.json"| S3OUT[("S3 output/YYYY-MM/")]
+    MOV[("S3 reference/movies.csv<br/>catalog")] -.-> PJ
+    MOD[("S3 models/v1/model.pkl<br/>ModelUri parameter")] -.-> PJ
+    PJ -->|"predictions.csv<br/>summary.json"| S3OUT[("S3 predictions/execution-id/")]
     S3OUT --> DS["downstream<br/>Athena / BI / apps"]
-    PJ -.->|stdout| CW["CloudWatch Logs"]
-    PIPE -.->|"status = Failed"| EB2["EventBridge rule"] --> SNS["SNS → email"]
+    PJ -.->|logs| CW["CloudWatch Logs"]
+    PIPE -.->|"status Failed"| EB2["EventBridge rule"] --> SNS["SNS → email"]
 ```
+
+**One run, step by step**
+1. Upstream uploads the month's file to `s3://<bucket>/consumption/2026-05.csv`. Only consumption changes monthly; the movie catalog lives at `reference/movies.csv` and is updated whenever upstream refreshes it.
+2. The bucket sends "Object Created" to EventBridge. A rule matching the `consumption/` prefix starts the pipeline and passes the object key as the `InputKey` parameter (a JSON path, `$.detail.object.key`, resolved from the event).
+3. The pipeline's only step is a Processing Job running our image. SageMaker downloads each input into a folder:
+   `/opt/ml/processing/input/{consumption,movies,model}`. The container runs the same command every month:
+   `predict --consumption …/consumption --movies …/movies --model …/model --output-dir /opt/ml/processing/output`.
+   The month is **read from the file** (a monthly drop contains one month), and the data checks run first.
+4. On success SageMaker uploads `predictions.csv` + `summary.json` to `predictions/<pipeline-execution-id>/`. On failure (e.g. a data check), the pipeline status goes `Failed` → EventBridge → SNS email. The log names the failed check and the CSV lines.
 
 | Concern | Choice | Why |
 |---|---|---|
-| Compute | **SageMaker Processing Job** | Runs our script as-is on files. Batch Transform expects rows that are already prepared (ours needs a groupby and a join first). Endpoints are for real-time, which isn't needed. |
-| Orchestration | **SageMaker Pipeline** (single step) | Execution history, retries and parameters, with no servers of our own. Leaves room for later steps (e.g. evaluate once June actuals arrive). |
-| Trigger | **S3 → EventBridge → Pipeline** | Event-driven, so no schedule to keep in sync with the data. No Lambda needed. |
-| Packaging | **Our Docker image in ECR** | The pickle needs scikit-learn 1.8.0 + Python 3.13. The prebuilt SageMaker sklearn images likely lag behind (to verify). Local and cloud run the same image. |
-| Model storage | **S3 `models/<version>/`, versioned bucket** | Swapping the model doesn't need an image rebuild. The version is a pipeline parameter, so the model used for each run is recorded. |
-| Output | **S3 `output/YYYY-MM/`** | Cheap, durable, and the natural hand-off point. `summary.json` records row counts, warnings and model version. |
-| Permissions | 1 SageMaker execution role (read `input/`+`models/`, write `output/`, pull ECR, write logs) + 1 EventBridge role (`StartPipelineExecution`) | Least privilege, scoped to prefixes. |
-| Monitoring | CloudWatch Logs + failure alarm via SNS; data checks in `summary.json` | Enough for a monthly batch. See ModelOps below. |
+| Compute | **SageMaker Processing Job** (`ml.t3.medium`) | Runs our script as-is on files. Batch Transform expects rows that are already prepared (ours needs a groupby and a join first). Endpoints are for real-time, which isn't needed. The data is tiny, so the smallest instance is enough. |
+| Orchestration | **SageMaker Pipeline** (single step) | Execution history, parameters, retries, and a native EventBridge target, with no servers of our own. Leaves room for the retraining step (see Future). |
+| Trigger | **S3 → EventBridge → Pipeline** | Event-driven, so no schedule to keep in sync with the data. EventBridge passes the file key straight into the pipeline, so **no Lambda**. |
+| Packaging | **Our Docker image in ECR**, `linux/amd64`, tagged by git SHA | Prebuilt SageMaker sklearn images stop at **1.4-2**; the pickle needs **1.8.0** + Python 3.13. Same image as local (verified: identical predictions on arm64 and amd64). |
+| Month | **Inferred from the file**, `--month` optional | EventBridge can pass the key but can't parse a month out of it. A monthly file holds one month; ambiguous files fail loudly. |
+| Model storage | **S3 `models/v1/model.pkl`, versioned bucket** | `ModelUri` is a pipeline parameter (default v1), so every execution records which model it used. New model = upload + change the default, no image rebuild. |
+| Output | **S3 `predictions/<execution-id>/`** | One folder per run: reruns never overwrite, and each output traces back to its execution (inputs, model, logs). `input_month`/`target_month` columns make it queryable by month (Athena table over `predictions/`). |
+| Permissions | **SageMaker execution role**: read `consumption/`, `reference/`, `models/`; write `predictions/`; pull from ECR; write CloudWatch Logs. **EventBridge role**: `sagemaker:StartPipelineExecution` on this pipeline only. | Least privilege, scoped to prefixes and one pipeline. |
+| Monitoring | CloudWatch Logs (`/aws/sagemaker/ProcessingJobs`), EventBridge rule on pipeline status `Failed` → SNS email, `summary.json` per run | Enough for one run a month. See ModelOps below. |
 
-**Open / to verify**
-- Can EventBridge pass the uploaded key's month to the pipeline as a parameter? If not: the pipeline processes the newest `input/` month, or a ~10-line Lambda starts it.
-- Latest prebuilt SageMaker sklearn version (confirms we need the custom image).
+**Resolved (2026-09-27, AWS docs)**
+- EventBridge → SageMaker Pipeline supports **dynamic parameters** via JSON path from the event ([docs](https://docs.aws.amazon.com/sagemaker/latest/dg/pipeline-eventbridge.html)).
+- Prebuilt SageMaker scikit-learn containers support up to **1.4-2** ([docs](https://docs.aws.amazon.com/sagemaker/latest/dg/sklearn.html)), so the custom image is required.
+
+**Unverified without an AWS account**: the exact pipeline-definition JSON, IAM policy completeness, and the S3 → EventBridge → pipeline wiring end to end. How to validate: `terraform validate`/`plan`, then one manual upload in a sandbox account.
 
 ## HF Spaces: live demo
 - Docker Space, same image, entrypoint `streamlit` on port 7860. The model and sample data are baked into the image (7 MB).

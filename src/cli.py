@@ -1,17 +1,29 @@
-"""CLI: uv run python -m src.cli {check,predict} [--month 2026-05-01] ..."""
+"""CLI: uv run python -m src.cli {check,predict} [--month YYYY-MM-DD] ..."""
 import json
 import logging
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
-from src.checks import ERROR, validate
+from src.checks import ERROR, infer_month, validate
 from src.pipeline import load_model, read_consumption, read_movies, run
 
 ROOT = Path(__file__).resolve().parents[1]
 MOVIES = ROOT / "data/inference_movies.csv"
 CONSUMPTION = ROOT / "data/inference_consumption.csv"
 app = typer.Typer(no_args_is_help=True)
+MONTH_HELP = "Input month (YYYY-MM-DD). Default: the only month in the consumption file."
+
+
+def single_file(path):
+    """A file, or a folder holding exactly one file (SageMaker mounts each S3 input as a folder)."""
+    if not path.is_dir():
+        return path
+    files = [p for p in path.iterdir() if p.is_file() and not p.name.startswith(".")]
+    if len(files) != 1:
+        raise ValueError(f"{path}: expected exactly one file, found {len(files)}")
+    return files[0]
 
 
 @app.callback()
@@ -21,10 +33,15 @@ def main():
 
 
 @app.command()
-def check(movies: Path = MOVIES, consumption: Path = CONSUMPTION, month: str = "2026-05-01"):
+def check(
+    movies: Path = MOVIES,
+    consumption: Path = CONSUMPTION,
+    month: Annotated[str | None, typer.Option(help=MONTH_HELP)] = None,
+):
     """Validate the input files without predicting (e.g. before uploading them)."""
     try:
-        issues = validate(read_movies(movies), read_consumption(consumption), month)
+        consumption_raw = read_consumption(single_file(consumption))
+        issues = validate(read_movies(single_file(movies)), consumption_raw, month or infer_month(consumption_raw))
     except (OSError, ValueError) as error:
         logging.error(error)
         raise typer.Exit(1)
@@ -38,12 +55,14 @@ def predict(
     movies: Path = MOVIES,
     consumption: Path = CONSUMPTION,
     model: Path = ROOT / "artifacts/movie_consumption_model.pkl",
-    month: str = "2026-05-01",
+    month: Annotated[str | None, typer.Option(help=MONTH_HELP)] = None,
     output_dir: Path = ROOT / "output",
 ):
     """Check the inputs, then write predictions.csv and summary.json to OUTPUT_DIR."""
     try:
-        predictions, summary = run(read_movies(movies), read_consumption(consumption), load_model(model), month)
+        predictions, summary = run(
+            read_movies(single_file(movies)), read_consumption(single_file(consumption)), load_model(single_file(model)), month
+        )
     except (OSError, ValueError) as error:
         logging.error(error)
         raise typer.Exit(1)

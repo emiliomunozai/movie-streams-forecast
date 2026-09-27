@@ -14,7 +14,7 @@ Requires [uv](https://docs.astral.sh/uv/) (installs Python 3.13 and the pinned l
 uv sync                                   # create .venv from uv.lock
 uv run python -m src.cli check            # validate the input files only
 uv run python -m src.cli predict          # checks + predictions → output/
-uv run pytest -q                          # 30 tests, ~1 s
+uv run pytest -q                          # 32 tests, ~1 s
 ```
 
 With your own files or another month:
@@ -22,9 +22,11 @@ With your own files or another month:
 ```bash
 uv run python -m src.cli predict \
   --movies path/movies.csv --consumption path/consumption.csv \
-  --model artifacts/movie_consumption_model.pkl --month 2026-05-01 --output-dir output/
+  --model artifacts/movie_consumption_model.pkl --output-dir output/
 ```
 
+The month is read from the consumption file; pass `--month YYYY-MM-DD` if the file holds several months.
+Each input can also be a folder holding exactly one file (that is how SageMaker mounts S3 inputs).
 Exit code `0` = success, `1` = missing file or failed data check (the log names the check and the CSV lines).
 
 ### Docker
