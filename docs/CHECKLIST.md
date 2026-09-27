@@ -26,10 +26,10 @@ Ordered by what the brief evaluates: correctness → engineering → AWS → Ter
 - [x] `terraform fmt/validate/test` (mocked AWS) + notes on what is unverified (`infra/README.md`)
 
 ## 4 · Wrap-up (must)
-- [ ] Limitations (incl. single-transition model: retrain on many month pairs + month-of-year + movie age), improvements (monthly retrain step + registry gate, see ARCHITECTURE), AI usage
+- [x] Limitations (incl. single-transition model: retrain on many month pairs + month-of-year + movie age), improvements (monthly retrain step + registry gate, see ARCHITECTURE), AI usage
 - [ ] Final review + package (repo / zip)
 
 ## 5 · Showcase (after the musts)
-- [ ] Streamlit app: upload or sample data → predictions table + download
-- [ ] ModelOps dashboard: data quality, drift vs training, prediction distribution
+- [x] Streamlit app: upload or sample data → predictions table + download
+- [x] ModelOps dashboard: data quality, drift vs training, predicted vs input
 - [ ] Deploy to HF Spaces, add the live URL to README

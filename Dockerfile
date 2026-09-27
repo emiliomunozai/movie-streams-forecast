@@ -7,10 +7,12 @@ COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --frozen --no-dev --no-install-project
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 
-# Default model + sample inputs; in AWS they are overridden with --model/--movies/--consumption.
+# Default model + sample inputs (+ training inputs as the drift reference for the UI).
+# In AWS they are overridden with --model/--movies/--consumption.
 COPY artifacts artifacts
-COPY data/inference_*.csv data/
+COPY data data
 COPY src src
 
+# Default = the UI on 7860 (HF Spaces). Batch: `docker run <image> predict ...` (what SageMaker passes).
 ENTRYPOINT ["python", "-m", "src.cli"]
-CMD ["predict"]
+CMD ["ui", "--port", "7860"]

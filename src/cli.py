@@ -1,6 +1,8 @@
-"""CLI: uv run python -m src.cli {check,predict} [--month YYYY-MM-DD] ..."""
+"""CLI: uv run python -m src.cli {check,predict,ui} [--month YYYY-MM-DD] ..."""
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -60,7 +62,7 @@ def predict(
 ):
     """Check the inputs, then write predictions.csv and summary.json to OUTPUT_DIR."""
     try:
-        predictions, summary = run(
+        predictions, summary, _ = run(
             read_movies(single_file(movies)), read_consumption(single_file(consumption)), load_model(single_file(model)), month
         )
     except (OSError, ValueError) as error:
@@ -71,6 +73,13 @@ def predict(
     predictions.to_csv(output_dir / "predictions.csv", index=False, float_format="%.2f")
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     logging.info("wrote %d predictions to %s", len(predictions), output_dir)
+
+
+@app.command()
+def ui(port: int = 8501):
+    """Launch the Streamlit app (predictions + ModelOps dashboard)."""
+    os.execv(sys.executable, [sys.executable, "-m", "streamlit", "run", str(ROOT / "src/app.py"),
+                              "--server.port", str(port), "--server.address", "0.0.0.0", "--browser.gatherUsageStats", "false"])
 
 
 if __name__ == "__main__":

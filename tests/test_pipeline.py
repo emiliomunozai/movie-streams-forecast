@@ -65,7 +65,7 @@ def test_same_month_rows_are_summed():
 
 
 def test_movie_without_metadata_is_still_predicted(predictions):
-    result, summary = run(MOVIES.iloc[1:], CONSUMPTION, MODEL)
+    result, summary, _ = run(MOVIES.iloc[1:], CONSUMPTION, MODEL)
     assert len(result) == len(predictions) and result["predicted_june_streams"].notna().all()
     assert summary["warnings"][0]["check"] == "movies_without_metadata"
 

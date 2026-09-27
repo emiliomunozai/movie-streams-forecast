@@ -71,7 +71,7 @@ def unseen_categories(model, features):
 
 
 def run(movies_raw, consumption_raw, model, month=None):
-    """Checks + full pipeline on raw frames. Returns (predictions, summary); raises ValueError on failed checks.
+    """Checks + full pipeline on raw frames. Returns (predictions, summary, features); raises ValueError on failed checks.
 
     month: input month to predict from; default = the only month in the consumption file.
     """
@@ -96,4 +96,4 @@ def run(movies_raw, consumption_raw, model, month=None):
         "predicted_streams_total": round(float(predictions["predicted_june_streams"].sum()), 1),
         "input_streams_total": round(float(features["may_streams"].sum()), 1),
     }
-    return predictions, summary
+    return predictions, summary, features

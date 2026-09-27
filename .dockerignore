@@ -5,4 +5,4 @@ __pycache__
 output
 tests
 docs
-data/train_*
+infra
