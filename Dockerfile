@@ -1,6 +1,6 @@
 # One image for local runs, SageMaker Processing and HF Spaces.
 FROM python:3.13-slim
-COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /bin/uv
+RUN pip install --no-cache-dir uv==0.12.1  # from PyPI: one registry fewer to reach at build time
 
 WORKDIR /app
 COPY pyproject.toml uv.lock .python-version ./

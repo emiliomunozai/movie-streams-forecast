@@ -51,19 +51,37 @@ run "wiring" {
   }
 
   assert {
+    condition     = [for step in jsondecode(aws_sagemaker_pipeline.forecast.pipeline_definition).Steps : step.Arguments.AppSpecification.ContainerArguments[0]] == ["predict", "evaluate"]
+    error_message = "the pipeline should run predict and evaluate"
+  }
+
+  assert {
     condition = jsondecode(aws_sagemaker_pipeline.forecast.pipeline_definition).Steps[0].Arguments.AppSpecification.ContainerArguments == [
       "predict",
       "--consumption", "/opt/ml/processing/input/consumption",
       "--movies", "/opt/ml/processing/input/movies",
       "--model", "/opt/ml/processing/input/model",
-      "--output-dir", "/opt/ml/processing/output",
+      "--output-dir", "/opt/ml/processing/predictions",
+      "--partition-by-month",
     ]
-    error_message = "the job must run the same CLI command as tested locally in Docker"
+    error_message = "predict must run the same CLI command as tested locally in Docker"
   }
 
   assert {
-    condition     = [for i in jsondecode(aws_sagemaker_pipeline.forecast.pipeline_definition).Steps[0].Arguments.ProcessingInputs : i.S3Input.LocalPath] == ["/opt/ml/processing/input/consumption", "/opt/ml/processing/input/model", "/opt/ml/processing/input/movies"]
-    error_message = "each input must be mounted where the CLI arguments point"
+    condition = alltrue([
+      for step in jsondecode(aws_sagemaker_pipeline.forecast.pipeline_definition).Steps : alltrue([
+        for arg in step.Arguments.AppSpecification.ContainerArguments : contains(concat(
+          [for i in step.Arguments.ProcessingInputs : i.S3Input.LocalPath],
+          [for o in step.Arguments.ProcessingOutputConfig.Outputs : o.S3Output.LocalPath],
+        ), arg) if startswith(arg, "/opt/ml/processing/")
+      ])
+    ])
+    error_message = "every path a step's command uses must be mounted as an input or output of that step"
+  }
+
+  assert {
+    condition     = jsondecode(aws_sagemaker_pipeline.forecast.pipeline_definition).Steps[1].Arguments.ProcessingOutputConfig.Outputs[0].S3Output.S3Uri == "s3://movie-streams-forecast-123456789012/performance"
+    error_message = "evaluations must land in performance/"
   }
 
   assert {

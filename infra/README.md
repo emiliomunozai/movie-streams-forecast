@@ -1,7 +1,7 @@
 # Infra (Terraform)
 
 The AWS side of [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md): a monthly file under `consumption/` → EventBridge →
-SageMaker Pipeline (one Processing Job running our image) → `predictions/<execution-id>/`. A failed run → SNS email.
+SageMaker Pipeline with two parallel Processing Jobs running our image: **Predict** → `predictions/input_month=…/`, and **Evaluate** (last month's predictions vs this file) → `performance/<month>.json`. A failed run → SNS email.
 
 | File | What |
 |---|---|
@@ -21,8 +21,9 @@ terraform fmt -check -recursive && terraform validate && terraform test
 `terraform test` creates nothing. It runs the config against a fake AWS provider and asserts that:
 - only uploads under `consumption/` trigger the pipeline
 - the uploaded key is passed through as `InputKey`
-- the job runs exactly the CLI command we tested in Docker
-- each input is mounted where that command expects it
+- the pipeline runs predict and evaluate, and predict runs exactly the CLI command we tested in Docker
+- every path a step's command uses is mounted as an input or output of that step
+- evaluations land in `performance/`
 - the requested image tag is used
 
 ## Deploy (with an AWS account)
@@ -44,6 +45,7 @@ aws s3 cp ../data/inference_consumption.csv s3://$BUCKET/consumption/2026-05.csv
 
 # 4. result
 aws s3 ls s3://$BUCKET/predictions/ --recursive
+# next month's upload also writes performance/<month>.json (accuracy of this month's predictions)
 ```
 
 **Update the model:** upload `models/v2/model.pkl`, then change the pipeline's `ModelUri` default, or pass it on a manual run. No image rebuild.
@@ -60,6 +62,7 @@ aws s3 ls s3://$BUCKET/predictions/ --recursive
 
 - **AWS-side acceptance:** that AWS accepts the pipeline definition JSON as written, and that the IAM policies are complete. These are the main unknowns.
 - **The event path:** S3 "Object Created" events actually reaching the rule with `eventbridge = true`, and the pipeline-status event field names used by the failure rule.
+- **The empty-prefix case:** that the `predictions/README.txt` placeholder is enough for the Evaluate step's input on the first month.
 
 How to close these: `terraform plan`/`apply` in a sandbox account, upload one file, and check that the run succeeds and `predictions/` appears. Then upload a broken file and confirm the alert email arrives.
 

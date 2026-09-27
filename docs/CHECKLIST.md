@@ -32,4 +32,5 @@ Ordered by what the brief evaluates: correctness → engineering → AWS → Ter
 ## 5 · Showcase (after the musts)
 - [x] Streamlit app: upload or sample data → predictions table + download
 - [x] ModelOps dashboard: data quality, drift vs training, predicted vs input
+- [x] Accuracy by month: `cli evaluate` + Evaluate pipeline step + dashboard history (seeded with v1 holdout)
 - [ ] Deploy to HF Spaces, add the live URL to README

@@ -1,4 +1,4 @@
-# Monthly batch inference: S3 drop -> EventBridge -> SageMaker Pipeline (Processing Job) -> S3 predictions.
+# Monthly batch: S3 drop -> EventBridge -> SageMaker Pipeline (Predict + Evaluate) -> S3 predictions/ + performance/.
 # See docs/ARCHITECTURE.md for the diagram and reasoning.
 
 terraform {
@@ -27,7 +27,7 @@ locals {
 
 # ---------- Storage: one bucket, one prefix per role ----------
 # consumption/  monthly drops (trigger)     reference/  movie catalog
-# models/       model versions               predictions/<execution-id>/  outputs
+# models/       model versions               predictions/input_month=YYYY-MM-DD/   performance/<month>.json
 
 resource "aws_s3_bucket" "data" {
   bucket = local.bucket
@@ -80,7 +80,7 @@ data "aws_iam_policy_document" "sagemaker" {
   statement {
     sid       = "ReadInputs"
     actions   = ["s3:GetObject"]
-    resources = [for prefix in ["consumption", "reference", "models"] : "${aws_s3_bucket.data.arn}/${prefix}/*"]
+    resources = [for prefix in ["consumption", "reference", "models", "predictions"] : "${aws_s3_bucket.data.arn}/${prefix}/*"]
   }
   statement {
     sid       = "ListInputs"
@@ -88,9 +88,9 @@ data "aws_iam_policy_document" "sagemaker" {
     resources = [aws_s3_bucket.data.arn]
   }
   statement {
-    sid       = "WritePredictions"
+    sid       = "WriteOutputs"
     actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.data.arn}/predictions/*"]
+    resources = [for prefix in ["predictions", "performance"] : "${aws_s3_bucket.data.arn}/${prefix}/*"]
   }
   statement {
     sid       = "PullImage"
@@ -129,7 +129,43 @@ resource "aws_iam_role_policy" "sagemaker" {
   policy = data.aws_iam_policy_document.sagemaker.json
 }
 
-# ---------- Pipeline: one Processing step running `cli predict` ----------
+# ---------- Pipeline: Predict (this month) + Evaluate (last month's predictions vs this month's actuals) ----------
+# Both steps run the same image with a different CLI command, in parallel (no dependency between them).
+
+locals {
+  proc = "/opt/ml/processing"
+  step_inputs = { # name -> S3 URI (pipeline expressions allowed)
+    consumption = { "Std:Join" = { On = "/", Values = [local.s3, { Get = "Parameters.InputKey" }] } }
+    movies      = { Get = "Parameters.MoviesUri" }
+    model       = { Get = "Parameters.ModelUri" }
+    predictions = "${local.s3}/predictions" # all past runs (small), evaluate picks the month it needs
+  }
+  processing_input = { for name, uri in local.step_inputs : name => {
+    InputName = name
+    S3Input = {
+      S3Uri                  = uri
+      LocalPath              = "${local.input}/${name}"
+      S3DataType             = "S3Prefix"
+      S3InputMode            = "File"
+      S3DataDistributionType = "FullyReplicated"
+    }
+  } }
+  processing_output = { for name in ["predictions", "performance"] : name => {
+    OutputName = name
+    S3Output   = { S3Uri = "${local.s3}/${name}", LocalPath = "${local.proc}/${name}", S3UploadMode = "EndOfJob" }
+  } }
+  step_common = {
+    RoleArn             = aws_iam_role.sagemaker.arn
+    ProcessingResources = { ClusterConfig = { InstanceType = var.instance_type, InstanceCount = 1, VolumeSizeInGB = 10 } }
+    StoppingCondition   = { MaxRuntimeInSeconds = 1800 }
+  }
+}
+
+resource "aws_s3_object" "predictions_placeholder" {
+  bucket  = aws_s3_bucket.data.id
+  key     = "predictions/README.txt" # the Evaluate input prefix must not be empty on the first month
+  content = "Monthly predictions: input_month=YYYY-MM-DD/predictions.csv + summary.json\n"
+}
 
 resource "aws_sagemaker_pipeline" "forecast" {
   pipeline_name         = var.name
@@ -143,51 +179,44 @@ resource "aws_sagemaker_pipeline" "forecast" {
       { Name = "MoviesUri", Type = "String", DefaultValue = "${local.s3}/reference/movies.csv" },
       { Name = "ModelUri", Type = "String", DefaultValue = "${local.s3}/${aws_s3_object.model_v1.key}" },
     ]
-    Steps = [{
-      Name = "Predict"
-      Type = "Processing"
-      Arguments = {
-        RoleArn             = aws_iam_role.sagemaker.arn
-        ProcessingResources = { ClusterConfig = { InstanceType = var.instance_type, InstanceCount = 1, VolumeSizeInGB = 10 } }
-        StoppingCondition   = { MaxRuntimeInSeconds = 1800 }
-        AppSpecification = {
-          ImageUri = local.image # ENTRYPOINT python -m src.cli
-          ContainerArguments = [
-            "predict",
-            "--consumption", "${local.input}/consumption",
-            "--movies", "${local.input}/movies",
-            "--model", "${local.input}/model",
-            "--output-dir", "/opt/ml/processing/output",
-          ]
-        }
-        ProcessingInputs = [
-          for name, uri in {
-            consumption = { "Std:Join" = { On = "/", Values = [local.s3, { Get = "Parameters.InputKey" }] } }
-            movies      = { Get = "Parameters.MoviesUri" }
-            model       = { Get = "Parameters.ModelUri" }
-            } : {
-            InputName = name
-            S3Input = {
-              S3Uri                  = uri
-              LocalPath              = "${local.input}/${name}"
-              S3DataType             = "S3Prefix"
-              S3InputMode            = "File"
-              S3DataDistributionType = "FullyReplicated"
-            }
+    Steps = [
+      {
+        Name = "Predict"
+        Type = "Processing"
+        Arguments = merge(local.step_common, {
+          AppSpecification = {
+            ImageUri = local.image # ENTRYPOINT python -m src.cli
+            ContainerArguments = [
+              "predict",
+              "--consumption", "${local.input}/consumption",
+              "--movies", "${local.input}/movies",
+              "--model", "${local.input}/model",
+              "--output-dir", "${local.proc}/predictions",
+              "--partition-by-month", # -> predictions/input_month=YYYY-MM-DD/, reruns overwrite
+            ]
           }
-        ]
-        ProcessingOutputConfig = {
-          Outputs = [{
-            OutputName = "predictions"
-            S3Output = {
-              S3Uri        = { "Std:Join" = { On = "/", Values = ["${local.s3}/predictions", { Get = "Execution.PipelineExecutionId" }] } }
-              LocalPath    = "/opt/ml/processing/output"
-              S3UploadMode = "EndOfJob"
-            }
-          }]
-        }
-      }
-    }]
+          ProcessingInputs       = [for name in ["consumption", "movies", "model"] : local.processing_input[name]]
+          ProcessingOutputConfig = { Outputs = [local.processing_output["predictions"]] }
+        })
+      },
+      {
+        Name = "Evaluate"
+        Type = "Processing"
+        Arguments = merge(local.step_common, {
+          AppSpecification = {
+            ImageUri = local.image
+            ContainerArguments = [
+              "evaluate",
+              "--actuals", "${local.input}/consumption", # this month's file = actuals for last month
+              "--predictions", "${local.input}/predictions",
+              "--history-dir", "${local.proc}/performance", # -> performance/<month>.json
+            ]
+          }
+          ProcessingInputs       = [for name in ["consumption", "predictions"] : local.processing_input[name]]
+          ProcessingOutputConfig = { Outputs = [local.processing_output["performance"]] }
+        })
+      },
+    ]
   })
 }
 

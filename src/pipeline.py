@@ -52,6 +52,7 @@ def build_features(movies, consumption, month):
 
 def predict(model, features, month):
     predictions = features[GRAIN].copy()
+    predictions["input_streams"] = features["may_streams"]
     predictions["predicted_june_streams"] = model.predict(features[list(model.feature_names_in_)])
     predictions["input_month"] = month
     predictions["target_month"] = (pd.Timestamp(month) + pd.DateOffset(months=1)).strftime("%Y-%m-%d")

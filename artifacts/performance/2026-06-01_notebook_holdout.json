@@ -1,0 +1,15 @@
+{
+  "input_month": "2026-05-01",
+  "target_month": "2026-06-01",
+  "source": "notebook holdout: 15% unseen films, model v1 evaluation fit",
+  "rows_predicted": 310,
+  "rows_scored": 310,
+  "model_mae": 42.996,
+  "model_rmse": 93.818,
+  "model_wape": 0.6227,
+  "model_r2": 0.2387,
+  "baseline_mae": 58.616,
+  "baseline_rmse": 130.686,
+  "baseline_wape": 0.849,
+  "baseline_r2": -0.4772
+}

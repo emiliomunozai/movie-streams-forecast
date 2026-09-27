@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))  # streamlit runs this file as a script
 
 from src.checks import CHECKS, ERROR, infer_month, validate  # noqa: E402
-from src.monitoring import category_mix, numeric_drift  # noqa: E402
+from src.monitoring import category_mix, load_history, numeric_drift  # noqa: E402
 from src.pipeline import (build_features, load_model, prepare_consumption, prepare_movies,  # noqa: E402
                           read_consumption, read_movies, run)
 
@@ -63,7 +63,7 @@ if errors:
 predictions, summary, features = run(movies_raw, consumption_raw, model(), month)
 titles = movies_raw[["TITLE_ID", "ORIGINAL_TITLE"]].rename(columns={"ORIGINAL_TITLE": "title"}) \
     if "ORIGINAL_TITLE" in movies_raw else pd.DataFrame(columns=["TITLE_ID", "title"])
-table = predictions.assign(input_streams=features["may_streams"]).merge(titles, on="TITLE_ID", how="left")
+table = predictions.merge(titles, on="TITLE_ID", how="left")
 table = table[["TITLE_ID", "title", "country", "platform", "input_streams", "predicted_june_streams", "input_month", "target_month"]]
 
 tab_predictions, tab_ops, tab_checks = st.tabs(["Predictions", "ModelOps", "Data checks"])
@@ -111,8 +111,23 @@ with tab_ops:
                  column_config={"outside training p5-p95": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1)})
     st.dataframe(category_mix(training_inputs(), features), hide_index=True, width="stretch",
                  column_config={c: st.column_config.NumberColumn(format="percent") for c in ("training", "current")})
-    st.info("Accuracy (MAE, WAPE vs the 'next month = this month' baseline) needs actuals, so it can only be measured "
-            "once the target month closes. Notebook reference on unseen films: WAPE 0.62 vs 0.85 baseline.")
+
+    st.subheader("Accuracy by month")
+    st.caption("Each month's predictions are scored when the next consumption file arrives (`cli evaluate`), "
+               "against the baseline 'next month = this month'. WAPE = total absolute error ÷ total actual streams; lower is better.")
+    history = load_history(ROOT / "artifacts/performance")
+    if len(history) >= 2:
+        trend = history.melt("target_month", ["model_wape", "baseline_wape"], "series", "wape")
+        trend["series"] = trend["series"].map({"model_wape": "model", "baseline_wape": "baseline"})
+        st.altair_chart(alt.Chart(trend).mark_line(strokeWidth=2, point=alt.OverlayMarkDef(size=64)).encode(
+            x=alt.X("target_month:T", title="Predicted month"), y=alt.Y("wape:Q", title="WAPE"),
+            color=alt.Color("series:N", scale=alt.Scale(domain=["model", "baseline"], range=[ACCENT, REFERENCE]),
+                            legend=alt.Legend(orient="top", title=None)),
+            tooltip=["target_month:T", "series:N", alt.Tooltip("wape:Q", format=".3f")],
+        ), width="stretch")
+    else:
+        st.caption("The trend chart appears once a second month has been evaluated.")
+    st.dataframe(history, hide_index=True, width="stretch")
 
 with tab_checks:
     if issues:

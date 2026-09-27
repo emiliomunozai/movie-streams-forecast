@@ -15,7 +15,8 @@ uv sync                                   # create .venv from uv.lock
 uv run python -m src.cli check            # validate the input files only
 uv run python -m src.cli predict          # checks + predictions → output/
 uv run python -m src.cli ui               # Streamlit app: predictions + ModelOps dashboard
-uv run pytest -q                          # 33 tests, ~2 s
+uv run python -m src.cli evaluate --actuals next_month.csv   # score predictions once their month's actuals arrive
+uv run pytest -q                          # 36 tests, ~2 s
 ```
 
 With your own files or another month:
@@ -45,6 +46,7 @@ docker run --rm movie-streams-forecast check
 |---|---|
 | `TITLE_ID`, `country`, `platform` | Prediction grain: every combination observed in the input month |
 | `predicted_june_streams` | Predicted streams for the following month (name kept from the brief) |
+| `input_streams` | Streams in the input month (the baseline, and handy next to the prediction) |
 | `input_month`, `target_month` | Which month went in and which month is predicted |
 
 `summary.json`: row and movie counts, data-check warnings, categories unseen in training, input vs predicted totals.
@@ -66,7 +68,8 @@ src/checks.py     data checks (pluggable)
 src/pipeline.py   read → prepare → features → predict → summary
 src/cli.py        Typer CLI: check, predict, ui
 src/app.py        Streamlit UI (adapter over the same pipeline)
-src/monitoring.py input drift vs training (ModelOps tab)
+src/monitoring.py drift vs training + scoring predictions against actuals
+artifacts/performance/  accuracy history, one JSON per evaluated month (seeded with the notebook's v1 holdout)
 tests/            checks + pipeline + CLI tests
 docs/             brief, architecture, tools, checklist, AI log
 ```
@@ -93,7 +96,7 @@ docs/             brief, architecture, tools, checklist, AI log
 
 - **Monthly retraining** as a step in the same SageMaker Pipeline, trained on all transitions so far and split by time, with a model-registry gate against the current model and the baseline. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#future-model-updates-not-in-scope-the-brief-says-use-the-existing-model).
 - **Better features:** 3 months of history, month-of-year, movie age, and as-of-month metadata snapshots.
-- **Performance monitoring** once actuals arrive: MAE/WAPE vs the baseline as a pipeline step, plus `summary.json` counts published as CloudWatch metrics.
+- **Metrics in CloudWatch:** publish `summary.json` counts and `performance/` WAPE as metrics, with alarms, e.g. when WAPE is worse than the baseline.
 - **CI:** GitHub Actions running `pytest` + `terraform test` on every PR, and building and pushing the image on merge.
 - **A safer model format** (e.g. skops) plus a model card recording the training data hash and metrics.
 
