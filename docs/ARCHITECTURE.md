@@ -19,7 +19,7 @@ flowchart TB
 The batch job and the live app share the same code, so they can't drift apart. Any Docker host can run the image.
 
 ## Local
-`uv run python -m src.cli predict …` or `docker run <image> predict …`. `uv run streamlit run src/app.py` for the UI.
+`uv run python -m src.cli check` (validate only) / `uv run python -m src.cli predict …` or `docker run <image> predict …`. `uv run streamlit run src/app.py` for the UI.
 
 ## AWS: monthly batch (Parts 2 + 3)
 

@@ -9,11 +9,12 @@ Ordered by what the brief evaluates: correctness → engineering → AWS → Ter
 
 ## 1 · Inference (must)
 - [x] `src/pipeline.py` (month-agnostic, `--month`): validate → aggregate month → join → features → predict (+ summary)
-- [ ] `src/cli.py`: Typer `predict` → `output/predictions.csv` + `summary.json`
-- [ ] Logging + clear errors on bad input
+- [x] `src/cli.py`: Typer `predict` → `output/predictions.csv` + `summary.json`
+- [x] Logging + clear errors on bad input
 - [x] **Proof:** pipeline on training files rebuilds the notebook table (2005 rows, same features) (manual check done; also goes into tests)
-- [ ] Tests: grain, required columns, no June used, unmatched movie still predicted, bad input fails
-- [ ] Generate `predictions.csv` (deliverable)
+- [x] `src/checks.py`: pluggable data checks + `cli check` (pre-upload validation)
+- [x] Tests (30): every check, grain, columns, training-table rebuild, other months ignored, unmatched movie, CLI
+- [x] Generate `predictions.csv` (deliverable)
 
 ## 2 · Packaging (must)
 - [ ] `Dockerfile` (uv, pinned), runs `predict` locally

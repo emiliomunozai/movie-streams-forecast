@@ -8,46 +8,18 @@ import pickle
 
 import pandas as pd
 
+from src.checks import ERROR, MOVIE_COLUMNS, validate
+
 log = logging.getLogger(__name__)
-
 GRAIN = ["TITLE_ID", "country", "platform"]
-MOVIE_COLUMNS = {
-    "TITLE_ID": "TITLE_ID",
-    "YEAR": "release_year",
-    "RUNTIME_MINUTES": "runtime_minutes",
-    "PRIMARY_GENRE": "primary_genre",
-    "RATING_VALUE": "rating_value",
-    "RATING_VOTE_COUNT": "rating_vote_count",
-}
-CONSUMPTION_COLUMNS = ["imdb_id", "month", "country", "platform", "streams", "total_minutes"]
 
 
-def _read_csv(path, required, id_column):
-    df = pd.read_csv(path, encoding="utf-8-sig", dtype={id_column: "string"})  # files start with a BOM
-    missing = set(required) - set(df.columns)
-    if missing:
-        raise ValueError(f"{path}: missing columns {sorted(missing)}")
-    return df
+def read_movies(path):
+    return pd.read_csv(path, encoding="utf-8-sig", dtype={"TITLE_ID": "string"})  # files start with a BOM
 
 
-def load_movies(path):
-    movies = _read_csv(path, MOVIE_COLUMNS, "TITLE_ID")[list(MOVIE_COLUMNS)].rename(columns=MOVIE_COLUMNS)
-    duplicated = movies["TITLE_ID"].duplicated()
-    if duplicated.any():
-        raise ValueError(f"{path}: duplicated TITLE_IDs {movies.loc[duplicated, 'TITLE_ID'].tolist()[:5]}")
-    return movies
-
-
-def load_consumption(path):
-    df = _read_csv(path, CONSUMPTION_COLUMNS, "imdb_id").rename(columns={"imdb_id": "TITLE_ID"})
-    df["month"] = pd.to_datetime(df["month"], errors="raise").dt.strftime("%Y-%m-%d")
-    for column in ("streams", "total_minutes"):
-        df[column] = pd.to_numeric(df[column], errors="raise")
-        if (df[column] < 0).any():
-            raise ValueError(f"{path}: negative values in {column}")
-    if df[GRAIN].isna().any().any():
-        raise ValueError(f"{path}: empty TITLE_ID/country/platform values")
-    return df
+def read_consumption(path):
+    return pd.read_csv(path, encoding="utf-8-sig", dtype={"imdb_id": "string"})
 
 
 def load_model(path):
@@ -55,23 +27,27 @@ def load_model(path):
         return pickle.load(f)
 
 
+def prepare_movies(raw):
+    return raw[list(MOVIE_COLUMNS)].rename(columns=MOVIE_COLUMNS)
+
+
+def prepare_consumption(raw):
+    consumption = raw.rename(columns={"imdb_id": "TITLE_ID"})
+    consumption["month"] = pd.to_datetime(consumption["month"], format="ISO8601").dt.strftime("%Y-%m-%d")
+    for column in ("streams", "total_minutes"):
+        consumption[column] = pd.to_numeric(consumption[column])
+    return consumption
+
+
 def build_features(movies, consumption, month):
     """One row per TITLE_ID x country x platform observed in `month`, with the model's input features."""
-    rows = consumption[consumption["month"].eq(month)]
-    if rows.empty:
-        raise ValueError(f"no consumption rows for {month}; months in file: {sorted(consumption['month'].unique())}")
-
-    features = (
-        rows.groupby(GRAIN, as_index=False, dropna=False)
+    return (
+        consumption[consumption["month"].eq(month)]
+        .groupby(GRAIN, as_index=False, dropna=False)
         # the model names its inputs may_*; they hold whichever month is passed in
         .agg(may_streams=("streams", "sum"), may_total_minutes=("total_minutes", "sum"))
         .merge(movies, on="TITLE_ID", how="left", validate="many_to_one")
     )
-    unmatched = sorted(set(features["TITLE_ID"]) - set(movies["TITLE_ID"]))
-    if unmatched:
-        log.warning("%d TITLE_IDs without movie metadata (imputed by the model): %s", len(unmatched), unmatched[:10])
-    log.info("%s: %d consumption rows -> %d combinations", month, len(rows), len(features))
-    return features
 
 
 def predict(model, features, month):
@@ -94,21 +70,25 @@ def unseen_categories(model, features):
     }
 
 
-def run(movies_path, consumption_path, model_path, month="2026-05-01"):
-    """Full pipeline. Returns (predictions, summary)."""
+def run(movies_raw, consumption_raw, model, month="2026-05-01"):
+    """Checks + full pipeline on raw frames. Returns (predictions, summary); raises ValueError on failed checks."""
     month = pd.Timestamp(month).strftime("%Y-%m-%d")
-    model = load_model(model_path)
-    features = build_features(load_movies(movies_path), load_consumption(consumption_path), month)
-    predictions = predict(model, features, month)
+    issues = validate(movies_raw, consumption_raw, month)
+    errors = [issue["check"] for issue in issues if issue["severity"] == ERROR]
+    if errors:
+        raise ValueError(f"data checks failed: {errors}")
 
+    features = build_features(prepare_movies(movies_raw), prepare_consumption(consumption_raw), month)
+    predictions = predict(model, features, month)
     unseen = unseen_categories(model, features)
     if unseen:
-        log.warning("categories unseen in training: %s", unseen)
+        log.warning("categories unseen in training (ignored by the model): %s", unseen)
+    log.info("%s: %d combinations predicted", month, len(predictions))
     summary = {
         "input_month": month,
         "rows": len(predictions),
         "movies": int(predictions["TITLE_ID"].nunique()),
-        "movies_without_metadata": int(features["release_year"].isna().groupby(features["TITLE_ID"]).any().sum()),
+        "warnings": issues,
         "unseen_categories": unseen,
         "predicted_streams_total": round(float(predictions["predicted_june_streams"].sum()), 1),
         "input_streams_total": round(float(features["may_streams"].sum()), 1),
