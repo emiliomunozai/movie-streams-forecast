@@ -1,4 +1,4 @@
-"""Streamlit showcase: predictions + ModelOps dashboard. Run: uv run streamlit run src/app.py"""
+"""Streamlit UI over the same pipeline as the batch job. Run: uv run python -m src.cli ui"""
 import sys
 from pathlib import Path
 
@@ -14,7 +14,16 @@ from src.monitoring import category_mix, load_history, numeric_drift  # noqa: E4
 from src.pipeline import (build_features, load_model, prepare_consumption, prepare_movies,  # noqa: E402
                           read_consumption, read_movies, run)
 
-ACCENT, REFERENCE = "#2a78d6", "#8a8984"  # one series + gray reference line (dataviz palette)
+ACCENT, REFERENCE = "#2a78d6", "#8a8984"
+SEQUENTIAL = ["#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"]
+PADDING = {"left": 32, "right": 12, "top": 8, "bottom": 8}  # room for labels measured before the web font loads
+LOG_TICKS = [1, 10, 100, 1000, 10000]
+REPO = "https://github.com/emiliomunozai/movie-streams-forecast"
+FEATURES = {
+    "may_streams": "Input streams", "may_total_minutes": "Input minutes", "release_year": "Release year",
+    "runtime_minutes": "Runtime (min)", "rating_value": "Rating", "rating_vote_count": "Rating votes",
+    "country": "Market", "platform": "Platform", "primary_genre": "Genre",
+}
 
 
 @st.cache_resource
@@ -24,117 +33,259 @@ def model():
 
 @st.cache_data
 def training_inputs():
-    """Reference for drift: the model's inputs as built from the training files (May 2026)."""
+    """Drift reference: model inputs built from the training files (May 2026)."""
     movies = prepare_movies(read_movies(ROOT / "data/train_movies.csv"))
     return build_features(movies, prepare_consumption(read_consumption(ROOT / "data/train_consumption.csv")), "2026-05-01")
 
 
-st.set_page_config(page_title="Movie Streams Forecast", layout="wide")
-st.title("Movie Streams Forecast")
-st.caption("Next-month streams per movie × country × platform, from last month's consumption and movie metadata. "
-           "Same checks and pipeline as the batch job.")
+HOW_TO_READ = {
+    "top": "Ten titles with the highest forecast streams, summed across markets and platforms. "
+           "Longer bar = more forecast streams. Hover a bar for the exact value. Use for ranking: "
+           "the model predicts typical values, so summed totals understate actual volume.",
+    "grid": "Forecast streams summed per market (rows) and platform (columns). Darker cell = more streams; "
+            "the number in each cell is the total. Compare cells within the grid to see where demand concentrates.",
+    "table": "One row per title × market × platform observed in the input month. Streams = actual streams in the "
+             "input month; Forecast = predicted streams next month; Change = Forecast ÷ Streams − 1 "
+             "(negative = expected decline). Filter above, sort by clicking a column header.",
+    "accuracy": "One row per evaluated month: forecasts are scored once that month's actual consumption arrives. "
+                "WAPE = total absolute error ÷ total actual streams (lower is better). Baseline = 'next month equals "
+                "this month'; the model adds value when its WAPE is below the baseline's. MAE = average error in streams. "
+                "A trend chart appears from the second evaluated month.",
+    "scatter": "Each point is one title × market × platform. Horizontal: actual streams in the input month; vertical: "
+               "forecast for next month; both on log scales. The dashed diagonal means no change: points below it "
+               "are forecast to decline, points above it to grow.",
+    "drift": "Compares this run's model inputs with the data the model was trained on. The bar shows the share of rows "
+             "outside the training 5th–95th percentile range; about 10% is expected by definition. Status 'Shifted' "
+             "(above 25%) means the inputs differ from training and forecasts for those rows are less reliable.",
+    "mix": "Share of rows per market, platform and genre: training data vs. this run. Large differences indicate a "
+           "change in portfolio mix. Values absent from training are ignored by the model.",
+    "checks": "Every rule applied to the input files before forecasting. Errors stop the run; warnings are recorded "
+              "and the run continues. Result shows 'Passed' or the affected CSV lines.",
+}
+
+
+def month_label(month):
+    return pd.Timestamp(month).strftime("%b %Y")
+
+
+def label(name):
+    return name.replace("_", " ").capitalize()
+
+
+st.set_page_config(page_title="Streams Forecast", page_icon=":material/insights:", layout="wide")
 
 with st.sidebar:
-    source = st.radio("Data", ["Sample: May 2026", "Upload CSVs"])
-    if source == "Upload CSVs":
-        movies_file = st.file_uploader("Movie metadata CSV", type="csv")
-        consumption_file = st.file_uploader("Monthly consumption CSV", type="csv")
+    st.subheader("Input data")
+    source = st.segmented_control("Source", ["Sample", "Upload"], default="Sample", label_visibility="collapsed") or "Sample"
+    if source == "Upload":
+        movies_file = st.file_uploader("Title metadata (CSV)", type="csv")
+        consumption_file = st.file_uploader("Monthly consumption (CSV)", type="csv")
     else:
         movies_file, consumption_file = ROOT / "data/inference_movies.csv", ROOT / "data/inference_consumption.csv"
-    month = st.text_input("Input month (optional)", placeholder="YYYY-MM-DD, default: the file's only month") or None
+        st.caption("Sample: 100 titles, May 2026 consumption.")
+    month = st.text_input("Input month", placeholder="Auto-detect",
+                          help="YYYY-MM-DD. Defaults to the single month in the consumption file.") or None
+    st.divider()
+    st.subheader("Model")
+    st.caption("Random forest on log streams · scikit-learn 1.8 · v1  \n"
+               "Trained on May → June 2026 · 2,005 observations, 738 titles")
+    st.caption(f"[Source code and documentation]({REPO})")
+
+st.title("Streams Forecast")
+st.caption("Next-month streaming volume by title, market and platform")
 
 if movies_file is None or consumption_file is None:
-    st.info("Upload both files to run the forecast, or pick the sample data.")
+    st.info("Upload title metadata and monthly consumption files to generate a forecast.", icon=":material/upload_file:")
     st.stop()
 
 try:
     movies_raw, consumption_raw = read_movies(movies_file), read_consumption(consumption_file)
     issues = validate(movies_raw, consumption_raw, month or infer_month(consumption_raw))
 except ValueError as error:
-    st.error(str(error))
+    st.error(f"Input could not be read: {error}", icon=":material/error:")
     st.stop()
 
 errors = [issue for issue in issues if issue["severity"] == ERROR]
 if errors:
-    st.error(f"{len(errors)} data check(s) failed: fix the files and upload again.")
-    st.dataframe(pd.DataFrame(issues), hide_index=True, width="stretch")
+    st.error(f"Input validation failed with {len(errors)} error(s). Correct the files and upload again.", icon=":material/error:")
+    st.dataframe(pd.DataFrame(issues).assign(check=lambda d: d["check"].map(label)), hide_index=True, width="stretch")
     st.stop()
 
 predictions, summary, features = run(movies_raw, consumption_raw, model(), month)
-titles = movies_raw[["TITLE_ID", "ORIGINAL_TITLE"]].rename(columns={"ORIGINAL_TITLE": "title"}) \
-    if "ORIGINAL_TITLE" in movies_raw else pd.DataFrame(columns=["TITLE_ID", "title"])
+titles = (movies_raw[["TITLE_ID", "ORIGINAL_TITLE"]].rename(columns={"ORIGINAL_TITLE": "title"})
+          if "ORIGINAL_TITLE" in movies_raw else pd.DataFrame(columns=["TITLE_ID", "title"]))
 table = predictions.merge(titles, on="TITLE_ID", how="left")
-table = table[["TITLE_ID", "title", "country", "platform", "input_streams", "predicted_june_streams", "input_month", "target_month"]]
+table["title"] = table["title"].fillna(table["TITLE_ID"])
+table["change"] = table["predicted_june_streams"] / table["input_streams"] - 1
+table["change_pct"] = table["change"] * 100
+input_month, target_month = summary["input_month"], predictions["target_month"].iloc[0]
+drift = numeric_drift(training_inputs(), features)
+unseen = sum(len(values) for values in summary["unseen_categories"].values())
 
-tab_predictions, tab_ops, tab_checks = st.tabs(["Predictions", "ModelOps", "Data checks"])
+with st.container(horizontal=True):
+    st.badge(f"{month_label(input_month)} → {month_label(target_month)}", icon=":material/calendar_month:", color="blue")
+    if issues:
+        st.badge(f"{len(issues)} data warning(s)", icon=":material/warning:", color="orange")
+    else:
+        st.badge("All data checks passed", icon=":material/check_circle:", color="green")
+    st.badge("Model v1", icon=":material/deployed_code:", color="gray")
 
-with tab_predictions:
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Combinations predicted", f"{summary['rows']:,}")
-    c2.metric("Movies", f"{summary['movies']:,}")
-    c3.metric("Predicting", f"{predictions['target_month'].iloc[0][:7]} from {summary['input_month'][:7]}")
+overview, forecast, monitoring, quality = st.tabs(["Overview", "Forecast", "Monitoring", "Data quality"])
+
+with overview:
+    tiles = st.columns(5)
+    tiles[0].metric("Forecast month", month_label(target_month), border=True)
+    tiles[1].metric("Input month", month_label(input_month), border=True)
+    tiles[2].metric("Titles", f"{summary['movies']:,}", border=True)
+    tiles[3].metric("Title × market × platform", f"{summary['rows']:,}", border=True)
+    tiles[4].metric("Median change", f"{table['change'].median():+.0%}", border=True,
+                    help="Median of forecast ÷ input-month streams, minus 1.")
+
+    left, right = st.columns(2, gap="large")
+    with left:
+        st.subheader("Top titles by forecast streams", help=HOW_TO_READ["top"])
+        top = (table.groupby(["TITLE_ID", "title"], as_index=False)["predicted_june_streams"].sum()
+               .nlargest(10, "predicted_june_streams"))
+        st.altair_chart(alt.Chart(top).mark_bar(color=ACCENT, cornerRadiusEnd=4, height=18).encode(
+            x=alt.X("predicted_june_streams:Q", title="Forecast streams (all markets)"),
+            y=alt.Y("title:N", sort="-x", title=None, axis=alt.Axis(labelLimit=170)),
+            tooltip=[alt.Tooltip("title:N", title="Title"), alt.Tooltip("predicted_june_streams:Q", title="Forecast", format=",.0f")],
+        ).properties(height=340, padding=PADDING), width="stretch")
+    with right:
+        st.subheader("Forecast streams by market and platform", help=HOW_TO_READ["grid"])
+        grid = table.groupby(["country", "platform"], as_index=False)["predicted_june_streams"].sum()
+        midpoint = grid["predicted_june_streams"].max() / 2
+        base = alt.Chart(grid).encode(
+            x=alt.X("platform:N", title=None, scale=alt.Scale(paddingInner=0.06), axis=alt.Axis(labelAngle=0, orient="top")),
+            y=alt.Y("country:N", title=None, scale=alt.Scale(paddingInner=0.06)))
+        cells = base.mark_rect(cornerRadius=4).encode(
+            color=alt.Color("predicted_june_streams:Q", scale=alt.Scale(range=SEQUENTIAL), legend=None),
+            tooltip=[alt.Tooltip("country:N", title="Market"), alt.Tooltip("platform:N", title="Platform"),
+                     alt.Tooltip("predicted_june_streams:Q", title="Forecast", format=",.0f")])
+        values = base.mark_text(fontSize=13, fontWeight=500).encode(
+            text=alt.Text("predicted_june_streams:Q", format=",.0f"),
+            color=alt.condition(alt.datum.predicted_june_streams > midpoint, alt.value("white"), alt.value("#0b0b0b")))
+        st.altair_chart((cells + values).properties(height=340, padding=PADDING), width="stretch")
+
+with forecast:
+    st.subheader("Forecast by title, market and platform", help=HOW_TO_READ["table"])
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        markets = st.multiselect("Market", sorted(table["country"].unique()), placeholder="All markets")
+        platforms = st.multiselect("Platform", sorted(table["platform"].unique()), placeholder="All platforms")
+        search = st.text_input("Title", placeholder="Search titles")
+    keep = pd.Series(True, index=table.index)
+    if markets:
+        keep &= table["country"].isin(markets)
+    if platforms:
+        keep &= table["platform"].isin(platforms)
+    if search:
+        keep &= table["title"].str.contains(search, case=False, regex=False)
+    view = table[keep].sort_values("predicted_june_streams", ascending=False)
     st.dataframe(
-        table.sort_values("predicted_june_streams", ascending=False),
-        hide_index=True, width="stretch",
-        column_config={"predicted_june_streams": st.column_config.NumberColumn("predicted streams", format="%.1f")},
+        view[["title", "TITLE_ID", "country", "platform", "input_streams", "predicted_june_streams", "change_pct"]],
+        hide_index=True, width="stretch", height=520,
+        column_config={
+            "title": st.column_config.TextColumn("Title", width="large"),
+            "TITLE_ID": st.column_config.TextColumn("Title ID"),
+            "country": "Market",
+            "platform": "Platform",
+            "input_streams": st.column_config.NumberColumn(f"Streams {month_label(input_month)}", format="%d"),
+            "predicted_june_streams": st.column_config.NumberColumn(f"Forecast {month_label(target_month)}", format="%.1f"),
+            "change_pct": st.column_config.NumberColumn("Change", format="%+.0f%%"),
+        },
     )
-    st.download_button("Download predictions.csv", predictions.to_csv(index=False, float_format="%.2f"),
-                       "predictions.csv", "text/csv")
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.caption(f"{len(view):,} of {len(table):,} rows")
+        st.download_button("Download CSV", predictions.to_csv(index=False, float_format="%.2f"),
+                           f"predictions_{target_month[:7]}.csv", "text/csv", icon=":material/download:")
 
-with tab_ops:
-    drift = numeric_drift(training_inputs(), features)
-    ratio = (table["predicted_june_streams"] / table["input_streams"]).median()
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Data checks", "passed" if not issues else f"{len(issues)} warning(s)")
-    c2.metric("Unseen categories", sum(len(v) for v in summary["unseen_categories"].values()))
-    c3.metric("Shifted features", f"{(drift['status'] == 'shifted').sum()} of {len(drift)}")
-    c4.metric("Median predicted ÷ input", f"{ratio:.2f}")
+with monitoring:
+    tiles = st.columns(4)
+    tiles[0].metric("Data checks", "Passed" if not issues else f"{len(issues)} warnings", border=True)
+    tiles[1].metric("Unseen categories", unseen, border=True, help="Markets, platforms or genres absent from training.")
+    tiles[2].metric("Shifted features", f"{(drift['status'] == 'shifted').sum()} of {len(drift)}", border=True,
+                    help="More than 25% of rows outside the training 5th–95th percentile range.")
+    tiles[3].metric("Median change", f"{table['change'].median():+.0%}", border=True)
 
-    st.subheader("Predicted vs input streams")
-    st.caption("One dot per movie × country × platform. Dots under the dashed line are predicted to decline. "
-               "In training, June was 59% of May overall.")
-    low, high = table[["input_streams", "predicted_june_streams"]].min().min(), table["input_streams"].max()
-    diagonal = alt.Chart(pd.DataFrame({"v": [low, high]})).mark_line(color=REFERENCE, strokeDash=[4, 4], strokeWidth=2) \
-        .encode(x="v:Q", y="v:Q")
-    dots = alt.Chart(table).mark_circle(size=64, color=ACCENT, opacity=0.7).encode(
-        x=alt.X("input_streams:Q", scale=alt.Scale(type="log"), title="Streams in input month (log)"),
-        y=alt.Y("predicted_june_streams:Q", scale=alt.Scale(type="log"), title="Predicted streams next month (log)"),
-        tooltip=["title", "country", "platform", alt.Tooltip("input_streams:Q", format=",.0f"),
-                 alt.Tooltip("predicted_june_streams:Q", title="predicted", format=",.1f")],
-    )
-    st.altair_chart(diagonal + dots, width="stretch")
-
-    st.subheader("Input drift vs training")
-    st.caption("Model inputs of this run compared with the inputs the model was trained on. "
-               "'shifted' = more than 25% of rows fall outside the training p5-p95 (about 10% is normal).")
-    st.dataframe(drift, hide_index=True, width="stretch",
-                 column_config={"outside training p5-p95": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1)})
-    st.dataframe(category_mix(training_inputs(), features), hide_index=True, width="stretch",
-                 column_config={c: st.column_config.NumberColumn(format="percent") for c in ("training", "current")})
-
-    st.subheader("Accuracy by month")
-    st.caption("Each month's predictions are scored when the next consumption file arrives (`cli evaluate`), "
-               "against the baseline 'next month = this month'. WAPE = total absolute error ÷ total actual streams; lower is better.")
+    st.subheader("Accuracy by month", help=HOW_TO_READ["accuracy"])
     history = load_history(ROOT / "artifacts/performance")
     if len(history) >= 2:
         trend = history.melt("target_month", ["model_wape", "baseline_wape"], "series", "wape")
-        trend["series"] = trend["series"].map({"model_wape": "model", "baseline_wape": "baseline"})
+        trend["series"] = trend["series"].map({"model_wape": "Model", "baseline_wape": "Baseline"})
         st.altair_chart(alt.Chart(trend).mark_line(strokeWidth=2, point=alt.OverlayMarkDef(size=64)).encode(
-            x=alt.X("target_month:T", title="Predicted month"), y=alt.Y("wape:Q", title="WAPE"),
-            color=alt.Color("series:N", scale=alt.Scale(domain=["model", "baseline"], range=[ACCENT, REFERENCE]),
+            x=alt.X("target_month:T", title="Target month"), y=alt.Y("wape:Q", title="WAPE"),
+            color=alt.Color("series:N", scale=alt.Scale(domain=["Model", "Baseline"], range=[ACCENT, REFERENCE]),
                             legend=alt.Legend(orient="top", title=None)),
             tooltip=["target_month:T", "series:N", alt.Tooltip("wape:Q", format=".3f")],
         ), width="stretch")
+    if not history.empty:
+        history["target_month"] = pd.to_datetime(history["target_month"])
+    if history.empty:
+        st.caption("No evaluated months yet.")
     else:
-        st.caption("The trend chart appears once a second month has been evaluated.")
-    st.dataframe(history, hide_index=True, width="stretch")
+        st.dataframe(
+            history[["target_month", "source", "rows_scored", "model_wape", "baseline_wape", "model_mae", "baseline_mae", "model_r2"]],
+            hide_index=True, width="stretch",
+            column_config={
+                "target_month": st.column_config.DateColumn("Target month", format="MMM YYYY"),
+                "source": st.column_config.TextColumn("Source", width="large"),
+                "rows_scored": "Rows", "model_wape": st.column_config.NumberColumn("WAPE", format="%.3f"),
+                "baseline_wape": st.column_config.NumberColumn("Baseline WAPE", format="%.3f"),
+                "model_mae": st.column_config.NumberColumn("MAE", format="%.1f"),
+                "baseline_mae": st.column_config.NumberColumn("Baseline MAE", format="%.1f"),
+                "model_r2": st.column_config.NumberColumn("R²", format="%.3f"),
+            },
+        )
 
-with tab_checks:
-    if issues:
-        st.warning(f"{len(issues)} warning(s): the run continued; see the details below.")
-        st.dataframe(pd.DataFrame(issues), hide_index=True, width="stretch")
-    else:
-        st.success(f"All {len(CHECKS) + 1} checks passed.")
-    st.caption("Checks run on every file (add one in src/checks.py):")
-    st.dataframe(pd.DataFrame([{"check": fn.__name__, "severity": severity} for severity, fn in CHECKS]),
-                 hide_index=True, width="stretch")
+    st.subheader("Forecast vs. input streams", help=HOW_TO_READ["scatter"])
+    low, high = table[["input_streams", "predicted_june_streams"]].min().min(), table["input_streams"].max()
+    diagonal = alt.Chart(pd.DataFrame({"v": [low, high]})).mark_line(color=REFERENCE, strokeDash=[4, 4], strokeWidth=2) \
+        .encode(x="v:Q", y="v:Q")
+    dots = alt.Chart(table).mark_circle(size=64, color=ACCENT, opacity=0.65).encode(
+        x=alt.X("input_streams:Q", scale=alt.Scale(type="log"), title=f"Streams, {month_label(input_month)}",
+                axis=alt.Axis(values=LOG_TICKS, format=",")),
+        y=alt.Y("predicted_june_streams:Q", scale=alt.Scale(type="log"), title=f"Forecast, {month_label(target_month)}",
+                axis=alt.Axis(values=LOG_TICKS, format=",")),
+        tooltip=[alt.Tooltip("title:N", title="Title"), alt.Tooltip("country:N", title="Market"), "platform:N",
+                 alt.Tooltip("input_streams:Q", title="Input", format=",.0f"),
+                 alt.Tooltip("predicted_june_streams:Q", title="Forecast", format=",.1f")],
+    )
+    st.altair_chart((diagonal + dots).properties(height=380, padding=PADDING), width="stretch")
+
+    st.subheader("Input drift vs. training", help=HOW_TO_READ["drift"])
+    st.dataframe(
+        drift.assign(feature=drift["feature"].map(FEATURES), status=drift["status"].str.capitalize()),
+        hide_index=True, width="stretch",
+        column_config={
+            "feature": "Feature",
+            "training p5": st.column_config.NumberColumn("Training p5", format="%.1f"),
+            "training median": st.column_config.NumberColumn("Training median", format="%.1f"),
+            "training p95": st.column_config.NumberColumn("Training p95", format="%.1f"),
+            "current median": st.column_config.NumberColumn("Current median", format="%.1f"),
+            "outside training p5-p95": st.column_config.ProgressColumn("Outside training range", format="percent",
+                                                                      min_value=0, max_value=1),
+            "status": "Status",
+        },
+    )
+    st.subheader("Category mix vs. training", help=HOW_TO_READ["mix"])
+    mix = category_mix(training_inputs(), features)
+    st.dataframe(
+        mix.assign(feature=mix["feature"].map(FEATURES)), hide_index=True, width="stretch",
+        column_config={"feature": "Feature", "value": "Value",
+                       "training": st.column_config.NumberColumn("Training share", format="percent"),
+                       "current": st.column_config.NumberColumn("Current share", format="percent")},
+    )
+
+with quality:
+    found = {issue["check"]: issue for issue in issues}
+    rows = [{"check": "required_columns", "severity": ERROR}] + [{"check": fn.__name__, "severity": sev} for sev, fn in CHECKS]
+    checks = pd.DataFrame([
+        {"Check": label(r["check"]), "Severity": r["severity"].capitalize(),
+         "Result": found[r["check"]]["message"] if r["check"] in found else "Passed"}
+        for r in rows
+    ])
+    passed = (checks["Result"] == "Passed").sum()
+    st.metric("Checks passed", f"{passed} of {len(checks)}", border=True, width="content")
+    st.subheader("Input validation rules", help=HOW_TO_READ["checks"])
+    st.dataframe(checks, hide_index=True, width="stretch", height=38 * (len(checks) + 1),
+                 column_config={"Result": st.column_config.TextColumn(width="large")})

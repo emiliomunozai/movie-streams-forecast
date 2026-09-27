@@ -1,0 +1,44 @@
+[server]
+headless = true
+maxUploadSize = 50
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "viewer"
+
+[theme]
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+headingFont = "Inter"
+headingFontSizes = ["2.1rem", "1.4rem", "1.1rem", "1rem", "0.9rem", "0.8rem"]
+headingFontWeights = [650, 600, 600, 600, 500, 500]
+baseFontSize = 15
+metricValueFontSize = "1.6rem"
+metricValueFontWeight = 600
+baseRadius = "0.5rem"
+buttonRadius = "0.5rem"
+showWidgetBorder = true
+showSidebarBorder = true
+chartCategoricalColors = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7"]
+chartSequentialColors = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6", "#256abf", "#1c5cab"]
+
+[theme.light]
+primaryColor = "#2a78d6"
+backgroundColor = "#fcfcfb"
+secondaryBackgroundColor = "#f3f3f1"
+textColor = "#0b0b0b"
+borderColor = "#e4e3df"
+
+[theme.light.sidebar]
+backgroundColor = "#f6f6f4"
+
+[theme.dark]
+primaryColor = "#3987e5"
+backgroundColor = "#141413"
+secondaryBackgroundColor = "#1f1f1e"
+textColor = "#f4f4f2"
+borderColor = "#2e2e2c"
+
+[theme.dark.sidebar]
+backgroundColor = "#1a1a19"

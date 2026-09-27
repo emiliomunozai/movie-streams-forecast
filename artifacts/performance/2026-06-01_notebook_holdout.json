@@ -1,7 +1,7 @@
 {
   "input_month": "2026-05-01",
   "target_month": "2026-06-01",
-  "source": "notebook holdout: 15% unseen films, model v1 evaluation fit",
+  "source": "Holdout evaluation, 15% unseen titles (model development)",
   "rows_predicted": 310,
   "rows_scored": 310,
   "model_mae": 42.996,

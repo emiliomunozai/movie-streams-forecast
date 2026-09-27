@@ -12,6 +12,7 @@ ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 COPY artifacts artifacts
 COPY data data
 COPY src src
+COPY .streamlit .streamlit
 
 # Default = the UI on $PORT (hosts like Render set it; 7860 otherwise).
 # Batch: `docker run <image> predict ...` (what SageMaker passes).
