@@ -17,8 +17,8 @@ Ordered by what the brief evaluates: correctness → engineering → AWS → Ter
 - [x] Generate `predictions.csv` (deliverable)
 
 ## 2 · Packaging (must)
-- [ ] `Dockerfile` (uv, pinned), runs `predict` locally
-- [ ] README: setup, run (uv + Docker), output
+- [x] `Dockerfile` (uv, pinned): built + verified on arm64 and linux/amd64, identical predictions
+- [x] README: setup, run (uv + Docker), output (verified from a fresh clone)
 
 ## 3 · AWS (must)
 - [ ] Finalize `ARCHITECTURE.md` (resolve open points)
