@@ -22,8 +22,8 @@ Ordered by what the brief evaluates: correctness → engineering → AWS → Ter
 
 ## 3 · AWS (must)
 - [x] Finalize `ARCHITECTURE.md` (open points resolved from AWS docs; SageMaker layout simulated in Docker)
-- [ ] `infra/` Terraform: S3, ECR, IAM roles, SageMaker Pipeline, EventBridge rule, SNS alarm
-- [ ] `terraform validate` + notes on what's unverified
+- [x] `infra/` Terraform: S3, ECR, IAM roles, SageMaker Pipeline, EventBridge rule, SNS alarm
+- [x] `terraform fmt/validate/test` (mocked AWS) + notes on what is unverified (`infra/README.md`)
 
 ## 4 · Wrap-up (must)
 - [ ] Limitations (incl. single-transition model: retrain on many month pairs + month-of-year + movie age), improvements (monthly retrain step + registry gate, see ARCHITECTURE), AI usage

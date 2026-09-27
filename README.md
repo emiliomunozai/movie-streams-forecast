@@ -70,5 +70,6 @@ docs/             brief, architecture, tools, checklist, AI log
 ## Docs
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): AWS/SageMaker design and the live demo
+- [`infra/README.md`](infra/README.md): Terraform, how to check it without AWS, deploy steps, assumptions
 - [`docs/AI_LOG.md`](docs/AI_LOG.md): every decision, finding and proof, in order
 - [`docs/CHALLENGE.md`](docs/CHALLENGE.md): the brief, condensed
