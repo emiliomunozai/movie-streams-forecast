@@ -27,7 +27,8 @@ Ordered by what the brief evaluates: correctness → engineering → AWS → Ter
 
 ## 4 · Wrap-up (must)
 - [x] Limitations (incl. single-transition model: retrain on many month pairs + month-of-year + movie age), improvements (monthly retrain step + registry gate, see ARCHITECTURE), AI usage
-- [ ] Final review + package (repo / zip)
+- [x] Final review (tests, Terraform, fresh clone, Docker, live) + delivered as the GitHub repo (no ZIP)
+- [x] Clean commit history (conventional commits, author = GitHub identity)
 
 ## 5 · Showcase (after the musts)
 - [x] Streamlit app: upload or sample data → predictions table + download
