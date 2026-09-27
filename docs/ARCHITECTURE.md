@@ -65,3 +65,10 @@ flowchart LR
 - **Performance:** only once June actuals land. Then compute MAE/WAPE against the notebook's baseline (RF WAPE 0.62 vs May-as-June 0.85).
 
 The same `summary.json` feeds the dashboard and would feed CloudWatch in AWS.
+
+## Future: model updates (not in scope; the brief says use the existing model)
+Our observation, not stated in the brief: the model learned one transition (May → June 2026) using one month of history.
+In production the calendar drives it: at the end of month *t* you know *t*'s actuals, so the pair *t-1 → t* becomes a new training example.
+- **Monthly retrain step** in the same SageMaker Pipeline, before the Processing step: a Training Job fits the notebook's estimator on all transitions so far (rolling window), split by **time**, not by movie.
+- **Gate:** register the new model in the SageMaker Model Registry only if it beats the current one (and the "June = May" baseline) on the latest month. The processing step then uses the approved version.
+- **Better features:** last 3 months of streams, month-of-year, movie age (instead of absolute `release_year`).

@@ -8,10 +8,10 @@ Ordered by what the brief evaluates: correctness → engineering → AWS → Ter
 - [x] git init
 
 ## 1 · Inference (must)
-- [ ] `src/pipeline.py` (month-agnostic, `--month`): validate → aggregate month → join → features → predict (+ summary)
+- [x] `src/pipeline.py` (month-agnostic, `--month`): validate → aggregate month → join → features → predict (+ summary)
 - [ ] `src/cli.py`: Typer `predict` → `output/predictions.csv` + `summary.json`
 - [ ] Logging + clear errors on bad input
-- [ ] **Proof:** pipeline on training files rebuilds the notebook table (2005 rows, same features)
+- [x] **Proof:** pipeline on training files rebuilds the notebook table (2005 rows, same features) (manual check done; also goes into tests)
 - [ ] Tests: grain, required columns, no June used, unmatched movie still predicted, bad input fails
 - [ ] Generate `predictions.csv` (deliverable)
 
@@ -25,7 +25,7 @@ Ordered by what the brief evaluates: correctness → engineering → AWS → Ter
 - [ ] `terraform validate` + notes on what's unverified
 
 ## 4 · Wrap-up (must)
-- [ ] Limitations (incl. single-transition model: retrain on many month pairs + month-of-year + movie age), improvements, AI usage
+- [ ] Limitations (incl. single-transition model: retrain on many month pairs + month-of-year + movie age), improvements (monthly retrain step + registry gate, see ARCHITECTURE), AI usage
 - [ ] Final review + package (repo / zip)
 
 ## 5 · Showcase (after the musts)
