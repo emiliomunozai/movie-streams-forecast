@@ -1,4 +1,5 @@
 """Streamlit UI over the same pipeline as the batch job. Run: uv run python -m src.cli ui"""
+import json
 import sys
 from pathlib import Path
 
@@ -9,10 +10,9 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))  # streamlit runs this file as a script
 
-from src.checks import CHECKS, ERROR, infer_month, validate  # noqa: E402
+from src.checks import CHECKS, ERROR, CheckError, fix_prompt  # noqa: E402
 from src.monitoring import category_mix, load_history, numeric_drift  # noqa: E402
-from src.pipeline import (build_features, load_model, prepare_consumption, prepare_movies,  # noqa: E402
-                          read_consumption, read_movies, run)
+from src.pipeline import load_model, read_csv, run  # noqa: E402
 
 ACCENT, REFERENCE = "#2a78d6", "#8a8984"
 SEQUENTIAL = ["#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"]
@@ -32,10 +32,9 @@ def model():
 
 
 @st.cache_data
-def training_inputs():
-    """Drift reference: model inputs built from the training files (May 2026)."""
-    movies = prepare_movies(read_movies(ROOT / "data/train_movies.csv"))
-    return build_features(movies, prepare_consumption(read_consumption(ROOT / "data/train_consumption.csv")), "2026-05-01")
+def drift_reference():
+    """Training-month input statistics (built by `cli reference`); the UI never reads training data."""
+    return json.loads((ROOT / "artifacts/drift_reference.json").read_text())
 
 
 HOW_TO_READ = {
@@ -49,8 +48,7 @@ HOW_TO_READ = {
              "(negative = expected decline). Filter above, sort by clicking a column header.",
     "accuracy": "One row per evaluated month: forecasts are scored once that month's actual consumption arrives. "
                 "WAPE = total absolute error ÷ total actual streams (lower is better). Baseline = 'next month equals "
-                "this month'; the model adds value when its WAPE is below the baseline's. MAE = average error in streams. "
-                "A trend chart appears from the second evaluated month.",
+                "this month'; the model adds value when its WAPE is below the baseline's. MAE = average error in streams.",
     "scatter": "Each point is one title × market × platform. Horizontal: actual streams in the input month; vertical: "
                "forecast for next month; both on log scales. The dashed diagonal means no change: points below it "
                "are forecast to decline, points above it to grow.",
@@ -99,27 +97,26 @@ if movies_file is None or consumption_file is None:
     st.stop()
 
 try:
-    movies_raw, consumption_raw = read_movies(movies_file), read_consumption(consumption_file)
-    issues = validate(movies_raw, consumption_raw, month or infer_month(consumption_raw))
+    movies_raw = read_csv(movies_file)
+    predictions, summary, features = run(movies_raw, read_csv(consumption_file), model(), month)
+except CheckError as error:
+    st.error("Input validation failed. Correct the files and upload again.", icon=":material/error:")
+    st.dataframe(pd.DataFrame(error.issues).assign(check=lambda d: d["check"].map(label)), hide_index=True, width="stretch")
+    st.caption("Or paste this prompt into an AI coding agent (e.g. Claude Code) to repair the files:")
+    st.code(fix_prompt(error.issues, [getattr(f, "name", f) for f in (movies_file, consumption_file)]), language=None, wrap_lines=True)
+    st.stop()
 except ValueError as error:
     st.error(f"Input could not be read: {error}", icon=":material/error:")
     st.stop()
 
-errors = [issue for issue in issues if issue["severity"] == ERROR]
-if errors:
-    st.error(f"Input validation failed with {len(errors)} error(s). Correct the files and upload again.", icon=":material/error:")
-    st.dataframe(pd.DataFrame(issues).assign(check=lambda d: d["check"].map(label)), hide_index=True, width="stretch")
-    st.stop()
-
-predictions, summary, features = run(movies_raw, consumption_raw, model(), month)
+issues = summary["warnings"]
 titles = (movies_raw[["TITLE_ID", "ORIGINAL_TITLE"]].rename(columns={"ORIGINAL_TITLE": "title"})
           if "ORIGINAL_TITLE" in movies_raw else pd.DataFrame(columns=["TITLE_ID", "title"]))
 table = predictions.merge(titles, on="TITLE_ID", how="left")
 table["title"] = table["title"].fillna(table["TITLE_ID"])
-table["change"] = table["predicted_june_streams"] / table["input_streams"] - 1
-table["change_pct"] = table["change"] * 100
+table["change"] = table["predicted_june_streams"] / table["input_streams"].where(table["input_streams"] > 0) - 1
 input_month, target_month = summary["input_month"], predictions["target_month"].iloc[0]
-drift = numeric_drift(training_inputs(), features)
+drift = numeric_drift(drift_reference(), features)
 unseen = sum(len(values) for values in summary["unseen_categories"].values())
 
 with st.container(horizontal=True):
@@ -182,7 +179,7 @@ with forecast:
         keep &= table["title"].str.contains(search, case=False, regex=False)
     view = table[keep].sort_values("predicted_june_streams", ascending=False)
     st.dataframe(
-        view[["title", "TITLE_ID", "country", "platform", "input_streams", "predicted_june_streams", "change_pct"]],
+        view[["title", "TITLE_ID", "country", "platform", "input_streams", "predicted_june_streams", "change"]],
         hide_index=True, width="stretch", height=520,
         column_config={
             "title": st.column_config.TextColumn("Title", width="large"),
@@ -191,7 +188,7 @@ with forecast:
             "platform": "Platform",
             "input_streams": st.column_config.NumberColumn(f"Streams {month_label(input_month)}", format="%d"),
             "predicted_june_streams": st.column_config.NumberColumn(f"Forecast {month_label(target_month)}", format="%.1f"),
-            "change_pct": st.column_config.NumberColumn("Change", format="%+.0f%%"),
+            "change": st.column_config.NumberColumn("Change", format="percent"),
         },
     )
     with st.container(horizontal=True, vertical_alignment="center"):
@@ -200,31 +197,19 @@ with forecast:
                            f"predictions_{target_month[:7]}.csv", "text/csv", icon=":material/download:")
 
 with monitoring:
-    tiles = st.columns(4)
+    tiles = st.columns(3)
     tiles[0].metric("Data checks", "Passed" if not issues else f"{len(issues)} warnings", border=True)
     tiles[1].metric("Unseen categories", unseen, border=True, help="Markets, platforms or genres absent from training.")
     tiles[2].metric("Shifted features", f"{(drift['status'] == 'shifted').sum()} of {len(drift)}", border=True,
                     help="More than 25% of rows outside the training 5th–95th percentile range.")
-    tiles[3].metric("Median change", f"{table['change'].median():+.0%}", border=True)
 
     st.subheader("Accuracy by month", help=HOW_TO_READ["accuracy"])
     history = load_history(ROOT / "artifacts/performance")
-    if len(history) >= 2:
-        trend = history.melt("target_month", ["model_wape", "baseline_wape"], "series", "wape")
-        trend["series"] = trend["series"].map({"model_wape": "Model", "baseline_wape": "Baseline"})
-        st.altair_chart(alt.Chart(trend).mark_line(strokeWidth=2, point=alt.OverlayMarkDef(size=64)).encode(
-            x=alt.X("target_month:T", title="Target month"), y=alt.Y("wape:Q", title="WAPE"),
-            color=alt.Color("series:N", scale=alt.Scale(domain=["Model", "Baseline"], range=[ACCENT, REFERENCE]),
-                            legend=alt.Legend(orient="top", title=None)),
-            tooltip=["target_month:T", "series:N", alt.Tooltip("wape:Q", format=".3f")],
-        ), width="stretch")
-    if not history.empty:
-        history["target_month"] = pd.to_datetime(history["target_month"])
     if history.empty:
         st.caption("No evaluated months yet.")
     else:
         st.dataframe(
-            history[["target_month", "source", "rows_scored", "model_wape", "baseline_wape", "model_mae", "baseline_mae", "model_r2"]],
+            history.assign(target_month=pd.to_datetime(history["target_month"]))[["target_month", "source", "rows_scored", "model_wape", "baseline_wape", "model_mae", "baseline_mae", "model_r2"]],
             hide_index=True, width="stretch",
             column_config={
                 "target_month": st.column_config.DateColumn("Target month", format="MMM YYYY"),
@@ -268,7 +253,7 @@ with monitoring:
         },
     )
     st.subheader("Category mix vs. training", help=HOW_TO_READ["mix"])
-    mix = category_mix(training_inputs(), features)
+    mix = category_mix(drift_reference(), features)
     st.dataframe(
         mix.assign(feature=mix["feature"].map(FEATURES)), hide_index=True, width="stretch",
         column_config={"feature": "Feature", "value": "Value",

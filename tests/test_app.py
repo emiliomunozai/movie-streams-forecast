@@ -11,5 +11,5 @@ def test_app_runs_on_sample_data():
     metrics = {m.label: m.value for m in app.metric}
     assert metrics["Title × market × platform"] == "321"
     assert metrics["Forecast month"] == "Jun 2026" and metrics["Data checks"] == "Passed"
-    assert metrics["Checks passed"] == "17 of 17"
+    assert metrics["Checks passed"] == "15 of 15"
     assert any("Holdout evaluation" in str(df.value.to_dict()) for df in app.dataframe)  # accuracy history shown

@@ -6,3 +6,4 @@ output
 tests
 docs
 infra
+data/train_*.csv

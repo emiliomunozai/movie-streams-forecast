@@ -8,27 +8,23 @@ import pickle
 
 import pandas as pd
 
-from src.checks import ERROR, MOVIE_COLUMNS, infer_month, validate
+from src.checks import ERROR, MOVIE_COLUMNS, CheckError, resolve_month, validate
 
 log = logging.getLogger(__name__)
 GRAIN = ["TITLE_ID", "country", "platform"]
 
 
-def read_movies(path):
-    return pd.read_csv(path, encoding="utf-8-sig", dtype={"TITLE_ID": "string"})  # files start with a BOM
-
-
-def read_consumption(path):
-    return pd.read_csv(path, encoding="utf-8-sig", dtype={"imdb_id": "string"})
+def read_csv(path):
+    """Movies or consumption file; ids stay strings. The files start with a BOM."""
+    return pd.read_csv(path, encoding="utf-8-sig", dtype={"TITLE_ID": "string", "imdb_id": "string"})
 
 
 def load_model(path):
     with open(path, "rb") as f:  # only load pickles from a trusted source
-        return pickle.load(f)
-
-
-def prepare_movies(raw):
-    return raw[list(MOVIE_COLUMNS)].rename(columns=MOVIE_COLUMNS)
+        try:
+            return pickle.load(f)
+        except Exception as error:  # corrupt file, or saved with other library versions
+            raise ValueError(f"{path}: cannot load the model ({type(error).__name__}: {error})") from error
 
 
 def prepare_consumption(raw):
@@ -39,8 +35,10 @@ def prepare_consumption(raw):
     return consumption
 
 
-def build_features(movies, consumption, month):
+def build_features(movies_raw, consumption_raw, month):
     """One row per TITLE_ID x country x platform observed in `month`, with the model's input features."""
+    consumption = prepare_consumption(consumption_raw)
+    movies = movies_raw[list(MOVIE_COLUMNS)].rename(columns=MOVIE_COLUMNS)
     return (
         consumption[consumption["month"].eq(month)]
         .groupby(GRAIN, as_index=False, dropna=False)
@@ -50,40 +48,35 @@ def build_features(movies, consumption, month):
     )
 
 
-def predict(model, features, month):
-    predictions = features[GRAIN].copy()
-    predictions["input_streams"] = features["may_streams"]
-    predictions["predicted_june_streams"] = model.predict(features[list(model.feature_names_in_)])
-    predictions["input_month"] = month
-    predictions["target_month"] = (pd.Timestamp(month) + pd.DateOffset(months=1)).strftime("%Y-%m-%d")
-    return predictions
-
-
 def unseen_categories(model, features):
     """Categories the model never saw in training; its OneHotEncoder silently ignores them."""
     preprocessing = model.regressor_.named_steps["preprocessing"]
     encoder = preprocessing.named_transformers_["categorical"].named_steps["onehot"]
     columns = preprocessing.transformers_[0][2]
     return {
-        column: sorted(set(features[column].dropna()) - set(known))
+        column: sorted(unseen)
         for column, known in zip(columns, encoder.categories_)
-        if set(features[column].dropna()) - set(known)
+        if (unseen := set(features[column].dropna()) - set(known))
     }
 
 
 def run(movies_raw, consumption_raw, model, month=None):
-    """Checks + full pipeline on raw frames. Returns (predictions, summary, features); raises ValueError on failed checks.
+    """Checks + full pipeline on raw frames. Returns (predictions, summary, features); raises CheckError on failed checks.
 
     month: input month to predict from; default = the only month in the consumption file.
     """
-    month = pd.Timestamp(month).strftime("%Y-%m-%d") if month else infer_month(consumption_raw)
+    month = resolve_month(consumption_raw, month)
     issues = validate(movies_raw, consumption_raw, month)
-    errors = [issue["check"] for issue in issues if issue["severity"] == ERROR]
-    if errors:
-        raise ValueError(f"data checks failed: {errors}")
+    if any(issue["severity"] == ERROR for issue in issues):
+        raise CheckError(issues)
 
-    features = build_features(prepare_movies(movies_raw), prepare_consumption(consumption_raw), month)
-    predictions = predict(model, features, month)
+    features = build_features(movies_raw, consumption_raw, month)
+    predictions = features[GRAIN].assign(
+        input_streams=features["may_streams"],
+        predicted_june_streams=model.predict(features[list(model.feature_names_in_)]),
+        input_month=month,
+        target_month=(pd.Timestamp(month) + pd.DateOffset(months=1)).strftime("%Y-%m-%d"),
+    )
     unseen = unseen_categories(model, features)
     if unseen:
         log.warning("categories unseen in training (ignored by the model): %s", unseen)

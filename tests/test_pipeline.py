@@ -5,13 +5,13 @@ import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
+from src.checks import CheckError
 from src.cli import app
-from src.pipeline import (GRAIN, build_features, load_model, prepare_consumption, prepare_movies,
-                          read_consumption, read_movies, run)
+from src.pipeline import GRAIN, build_features, load_model, prepare_consumption, read_csv, run
 
 MODEL = load_model("artifacts/movie_consumption_model.pkl")
-MOVIES = read_movies("data/inference_movies.csv")
-CONSUMPTION = read_consumption("data/inference_consumption.csv")
+MOVIES = read_csv("data/inference_movies.csv")
+CONSUMPTION = read_csv("data/inference_consumption.csv")
 
 
 @pytest.fixture(scope="module")
@@ -38,9 +38,9 @@ def test_feature_order_matches_schema():
 
 
 def test_reproduces_notebook_training_table():
-    consumption = prepare_consumption(read_consumption("data/train_consumption.csv"))
-    features = build_features(prepare_movies(read_movies("data/train_movies.csv")), consumption, "2026-05-01")
-    june = consumption[consumption["month"].eq("2026-06-01")].groupby(GRAIN, as_index=False)["streams"].sum()
+    consumption = read_csv("data/train_consumption.csv")
+    features = build_features(read_csv("data/train_movies.csv"), consumption, "2026-05-01")
+    june = prepare_consumption(consumption).query("month == '2026-06-01'").groupby(GRAIN, as_index=False)["streams"].sum()
     table = features.merge(june, on=GRAIN, validate="one_to_one")
     assert (len(table), table["TITLE_ID"].nunique()) == (2005, 738)  # feature_schema.json
 
@@ -60,7 +60,7 @@ def test_month_is_inferred_only_when_unambiguous(predictions):
 
 def test_same_month_rows_are_summed():
     doubled = pd.concat([CONSUMPTION, CONSUMPTION], ignore_index=True)
-    features = build_features(prepare_movies(MOVIES), prepare_consumption(doubled), "2026-05-01")
+    features = build_features(MOVIES, doubled, "2026-05-01")
     assert features["may_streams"].sum() == 2 * CONSUMPTION["streams"].sum()
 
 
@@ -71,7 +71,7 @@ def test_movie_without_metadata_is_still_predicted(predictions):
 
 
 def test_failed_check_stops_the_run():
-    with pytest.raises(ValueError, match="metrics_non_negative"):
+    with pytest.raises(CheckError, match="metrics_valid"):
         run(MOVIES, CONSUMPTION.assign(streams=-1), MODEL)
 
 
@@ -84,12 +84,26 @@ def test_cli(tmp_path):
 
 
 def test_cli_accepts_folders_like_sagemaker(tmp_path):
-    for name, source in [("movies", "data/inference_movies.csv"), ("consumption", "data/inference_consumption.csv"),
-                         ("model", "artifacts/movie_consumption_model.pkl")]:
+    for name, source in [("consumption", "data/inference_consumption.csv"), ("model", "artifacts/movie_consumption_model.pkl")]:
         (tmp_path / name).mkdir()
         shutil.copy(source, tmp_path / name)
+    (tmp_path / "movies").mkdir()  # monthly snapshots: the one of the input month is used
+    shutil.copy("data/inference_movies.csv", tmp_path / "movies/2026-05.csv")
+    shutil.copy("data/train_movies.csv", tmp_path / "movies/2026-04.csv")
     args = [f"--{name}={tmp_path / name}" for name in ("movies", "consumption", "model")]
     result = CliRunner().invoke(app, ["predict", *args, f"--output-dir={tmp_path / 'out'}"])
     assert result.exit_code == 0 and len(pd.read_csv(tmp_path / "out/predictions.csv")) == 321
-    shutil.copy("data/train_movies.csv", tmp_path / "movies")  # two files -> ambiguous
+    shutil.copy("data/train_consumption.csv", tmp_path / "consumption")  # two files -> ambiguous
     assert CliRunner().invoke(app, ["predict", *args, f"--output-dir={tmp_path / 'out'}"]).exit_code == 1
+    (tmp_path / "consumption/train_consumption.csv").unlink()
+    (tmp_path / "movies/2026-05.csv").unlink()  # no snapshot for May -> fail, never an older one
+    assert CliRunner().invoke(app, ["predict", *args, f"--output-dir={tmp_path / 'out'}"]).exit_code == 1
+
+
+def test_cli_fails_cleanly_on_bad_model_or_columns(tmp_path):
+    (tmp_path / "bad.pkl").write_bytes(b"junk")
+    (tmp_path / "wrong.csv").write_text("a,b\n1,2\n")
+    runner = CliRunner()
+    assert runner.invoke(app, ["predict", f"--model={tmp_path / 'bad.pkl'}", f"--output-dir={tmp_path}"]).exit_code == 1
+    with pytest.raises(ValueError, match="no 'month' column"):
+        run(MOVIES, pd.read_csv(tmp_path / "wrong.csv"), MODEL)

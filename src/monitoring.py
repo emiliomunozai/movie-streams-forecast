@@ -8,22 +8,30 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from src.checks import CONSUMPTION_COLUMNS
 from src.pipeline import GRAIN, prepare_consumption
 
-NUMERIC = ["may_streams", "may_total_minutes", "release_year", "runtime_minutes", "rating_value", "rating_vote_count"]
-CATEGORICAL = ["country", "platform", "primary_genre"]
 SHIFT_THRESHOLD = 0.25  # by construction ~10% of training rows fall outside its own p5-p95
+
+
+def drift_reference(features):
+    """Input statistics of the training month, saved once so runs are compared without reading training data."""
+    inputs = features.drop(columns="TITLE_ID")
+    return {
+        "numeric": {c: dict(zip(["p5", "median", "p95"], inputs[c].quantile([0.05, 0.5, 0.95]).tolist()))
+                    for c in inputs.select_dtypes("number")},
+        "categorical": {c: inputs[c].value_counts(normalize=True).to_dict()
+                        for c in inputs.select_dtypes(exclude="number")},
+    }
 
 
 def numeric_drift(reference, current):
     """Per numeric feature: training range vs this run, and the share of rows outside training p5-p95."""
     rows = []
-    for column in NUMERIC:
-        low, high = reference[column].quantile([0.05, 0.95])
-        outside = float((~current[column].between(low, high)).mean())
+    for column, ref in reference["numeric"].items():
+        outside = float((~current[column].between(ref["p5"], ref["p95"])).mean())
         rows.append({
             "feature": column,
-            "training p5": low,
-            "training median": reference[column].median(),
-            "training p95": high,
+            "training p5": ref["p5"],
+            "training median": ref["median"],
+            "training p95": ref["p95"],
             "current median": current[column].median(),
             "outside training p5-p95": outside,
             "status": "shifted" if outside > SHIFT_THRESHOLD else "ok",
@@ -34,10 +42,9 @@ def numeric_drift(reference, current):
 def category_mix(reference, current):
     """Share of rows per category value, training vs this run."""
     frames = []
-    for column in CATEGORICAL:
+    for column, shares in reference["categorical"].items():
         mix = pd.concat(
-            {"training": reference[column].value_counts(normalize=True), "current": current[column].value_counts(normalize=True)},
-            axis=1,
+            {"training": pd.Series(shares), "current": current[column].value_counts(normalize=True)}, axis=1
         ).fillna(0)
         frames.append(mix.rename_axis("value").reset_index().assign(feature=column))
     return pd.concat(frames, ignore_index=True)[["feature", "value", "training", "current"]]

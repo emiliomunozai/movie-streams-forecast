@@ -1,15 +1,14 @@
 import json
 
-import pandas as pd
 from typer.testing import CliRunner
 
 from src.cli import app
-from src.monitoring import numeric_drift, score_predictions
-from src.pipeline import load_model, read_consumption, read_movies, run
+from src.monitoring import drift_reference, numeric_drift, score_predictions
+from src.pipeline import load_model, read_csv, run
 
 MODEL = load_model("artifacts/movie_consumption_model.pkl")
-TRAIN_MOVIES = read_movies("data/train_movies.csv")
-TRAIN_CONSUMPTION = read_consumption("data/train_consumption.csv")  # has May and June: lets us test scoring
+TRAIN_MOVIES = read_csv("data/train_movies.csv")
+TRAIN_CONSUMPTION = read_csv("data/train_consumption.csv")  # has May and June: lets us test scoring
 
 
 def test_scoring_matches_the_notebook_rules():
@@ -19,9 +18,11 @@ def test_scoring_matches_the_notebook_rules():
     assert result["model_wape"] < result["baseline_wape"]  # in-sample, so this is only a sanity check
 
 
-def test_no_drift_against_itself():
+def test_drift_reference_is_up_to_date_and_stable():
     _, _, features = run(TRAIN_MOVIES, TRAIN_CONSUMPTION, MODEL, "2026-05-01")
-    assert (numeric_drift(features, features)["status"] == "ok").all()
+    reference = drift_reference(features)
+    assert reference == json.loads(open("artifacts/drift_reference.json").read())  # rebuild: `cli reference`
+    assert (numeric_drift(reference, features)["status"] == "ok").all()
 
 
 def test_monthly_cycle_via_cli(tmp_path):

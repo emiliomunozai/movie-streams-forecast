@@ -3,7 +3,10 @@
 To add a check: write `def name(movies, consumption, month)` that returns a message when something is wrong
 (None when fine) and decorate it with @check(ERROR) or @check(WARNING). Errors stop the run; warnings are logged.
 """
+import json
 import logging
+import re
+from pathlib import Path
 
 import pandas as pd
 
@@ -23,6 +26,11 @@ CONSUMPTION_COLUMNS = ["imdb_id", "month", "country", "platform", "streams", "to
 KEYS = ["imdb_id", "country", "platform"]
 METRICS = ["streams", "total_minutes"]
 CHECKS = []
+# category values seen in training, per model feature (the model silently ignores any other value)
+KNOWN = {
+    column: set(shares) for column, shares in
+    json.loads((Path(__file__).resolve().parents[1] / "artifacts/drift_reference.json").read_text())["categorical"].items()
+}
 
 
 def check(severity):
@@ -32,8 +40,16 @@ def check(severity):
     return register
 
 
-def validate(movies, consumption, month):
+class CheckError(ValueError):
+    """Raised by the pipeline when a check with severity ERROR fails; carries every issue found."""
+    def __init__(self, issues):
+        self.issues = issues
+        super().__init__(f"data checks failed: {[i['check'] for i in issues if i['severity'] == ERROR]}")
+
+
+def validate(movies, consumption, month=None):
     """Run every check on the raw data; returns [{check, severity, message}]."""
+    month = resolve_month(consumption, month)
     missing = [f"movies.{c}" for c in MOVIE_COLUMNS if c not in movies] + [
         f"consumption.{c}" for c in CONSUMPTION_COLUMNS if c not in consumption
     ]
@@ -50,9 +66,25 @@ def validate(movies, consumption, month):
     return issues
 
 
-def infer_month(consumption):
-    """The only month in the file (monthly drops); raises if there are none or several."""
-    months = _months(consumption).dropna().unique() if "month" in consumption else []
+def fix_prompt(issues, files):
+    """Ready-to-paste prompt for an AI coding agent (e.g. Claude Code) to repair the input files."""
+    found = "\n".join(f"- [{i['severity']}] {i['check']}: {i['message']}" for i in issues)
+    return (
+        f"The movie_streams_forecast data checks failed on {', '.join(map(str, files))}:\n{found}\n"
+        "Line numbers are examples (CSV lines, header = line 1): fix every row with each issue. Correct only obvious "
+        "mistakes (case, whitespace, typos, id format); never invent numbers, list those rows for me instead. Save each "
+        "changed file next to the original as <name>.fixed.csv, list every change, then rerun "
+        "`uv run python -m src.cli check --movies <movies file> --consumption <consumption file>` until it passes."
+    )
+
+
+def resolve_month(consumption, month=None):
+    """`month` as YYYY-MM-DD; default = the only month in the file (monthly drops), raises if there are none or several."""
+    if month:
+        return pd.Timestamp(month).strftime("%Y-%m-%d")
+    if "month" not in consumption:
+        raise ValueError(f"consumption file has no 'month' column; columns found: {list(consumption.columns)}")
+    months = _months(consumption).dropna().unique()
     if len(months) != 1:
         raise ValueError(f"cannot infer the month: file has {len(months)} months, pass --month")
     return pd.Timestamp(months[0]).strftime("%Y-%m-%d")
@@ -91,13 +123,10 @@ def keys_not_empty(movies, consumption, month):
 
 
 @check(ERROR)
-def metrics_numeric(movies, consumption, month):
-    return _rows((_num(consumption[METRICS]).isna() & consumption[METRICS].notna()).any(axis=1), "non-numeric streams/total_minutes")
-
-
-@check(ERROR)
-def metrics_non_negative(movies, consumption, month):
-    return _rows(_num(consumption[METRICS]).lt(0).any(axis=1), "negative streams/total_minutes")
+def metrics_valid(movies, consumption, month):
+    values = _num(consumption[METRICS])
+    bad = (values.isna() & consumption[METRICS].notna()) | values.lt(0)
+    return _rows(bad.any(axis=1), "non-numeric or negative streams/total_minutes")
 
 
 @check(WARNING)
@@ -108,6 +137,33 @@ def metrics_missing(movies, consumption, month):
 @check(WARNING)
 def duplicate_keys(movies, consumption, month):
     return _rows(consumption.duplicated(KEYS + ["month"], keep=False), "repeated movie x country x platform x month (summed)")
+
+
+@check(ERROR)
+def category_spelling(movies, consumption, month):
+    """'netflix', ' Brazil', 'HBO-Max': variants of a training value that the model would silently ignore."""
+    values = {"country": consumption["country"], "platform": consumption["platform"], "primary_genre": movies["PRIMARY_GENRE"]}
+    typos = {}
+    for column, found in values.items():
+        canonical = {_normalize(known): known for known in KNOWN[column]}
+        typos |= {v: canonical[_normalize(v)] for v in found.dropna().unique()
+                  if v not in KNOWN[column] and _normalize(v) in canonical}
+    if typos:
+        return f"variants of training values (found -> expected): {typos}"
+
+
+def _normalize(value):
+    return re.sub(r"\W", "", str(value)).casefold()
+
+
+@check(ERROR)
+def ids_well_formed(movies, consumption, month):
+    """IMDb ids look like tt0123456; 'TT123' or ' tt123' would silently miss the movie join."""
+    def bad(ids):
+        return ~ids.astype("string").str.fullmatch(r"tt\d+").fillna(True).astype(bool)
+    found = [m for m in (_rows(bad(consumption["imdb_id"]), "consumption imdb_id"), _rows(bad(movies["TITLE_ID"]), "movies TITLE_ID")) if m]
+    if found:
+        return "ids not like tt0123456: " + "; ".join(found)
 
 
 # movies
@@ -140,21 +196,9 @@ def movies_without_metadata(movies, consumption, month):
 
 
 @check(WARNING)
-def rating_in_range(movies, consumption, month):
-    return _rows(~_num(movies["RATING_VALUE"]).between(0, 10) & movies["RATING_VALUE"].notna(), "RATING_VALUE outside 0-10")
-
-
-@check(WARNING)
-def votes_non_negative(movies, consumption, month):
-    return _rows(_num(movies["RATING_VOTE_COUNT"]).lt(0), "negative RATING_VOTE_COUNT")
-
-
-@check(WARNING)
-def runtime_plausible(movies, consumption, month):
-    return _rows(~_num(movies["RUNTIME_MINUTES"]).between(1, 600) & movies["RUNTIME_MINUTES"].notna(), "RUNTIME_MINUTES outside 1-600")
-
-
-@check(WARNING)
-def release_year_plausible(movies, consumption, month):
-    years = _num(movies["YEAR"])
-    return _rows(~years.between(1900, pd.Timestamp(month).year) & years.notna(), f"YEAR outside 1900-{pd.Timestamp(month).year}")
+def movie_values_plausible(movies, consumption, month):
+    ranges = {"RATING_VALUE": (0, 10), "RATING_VOTE_COUNT": (0, float("inf")), "RUNTIME_MINUTES": (1, 600),
+              "YEAR": (1900, pd.Timestamp(month).year)}
+    values = _num(movies[list(ranges)])
+    outside = pd.DataFrame({c: ~values[c].between(*r) & values[c].notna() for c, r in ranges.items()})
+    return _rows(outside.any(axis=1), f"outside plausible range {({c: r for c, r in ranges.items() if outside[c].any()})}")

@@ -7,7 +7,7 @@ COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --frozen --no-dev --no-install-project
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 
-# Default model + sample inputs (+ training inputs as the drift reference for the UI).
+# Default model + sample inputs (training data stays out: the UI uses artifacts/drift_reference.json).
 # In AWS they are overridden with --model/--movies/--consumption.
 COPY artifacts artifacts
 COPY data data
