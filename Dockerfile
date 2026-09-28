@@ -7,10 +7,11 @@ COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --frozen --no-dev --no-install-project
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 
-# Default model + sample inputs (training data stays out: the UI uses artifacts/drift_reference.json).
-# In AWS they are overridden with --model/--movies/--consumption.
-COPY artifacts artifacts
+# Same layout as the S3 bucket: model v1, the sample month, the accuracy history for the dashboard.
+# In AWS the inputs are overridden with --model/--movies/--consumption (S3 mounted as folders).
+COPY models models
 COPY data data
+COPY output/performance output/performance
 COPY src src
 COPY .streamlit .streamlit
 

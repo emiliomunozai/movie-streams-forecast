@@ -5,8 +5,8 @@ from src.checks import CHECKS, ERROR, WARNING, fix_prompt, validate
 from src.pipeline import read_csv
 
 MONTH = "2026-05-01"
-MOVIES = read_csv("data/inference_movies.csv")
-CONSUMPTION = read_csv("data/inference_consumption.csv")
+MOVIES = read_csv("data/movies/2026-05.csv")
+CONSUMPTION = read_csv("data/consumption/2026-05.csv")
 
 
 def put(df, column, value, row=0):

@@ -2,8 +2,7 @@
 .venv
 .pytest_cache
 __pycache__
-output
+output/predictions
 tests
 docs
 infra
-data/train_*.csv

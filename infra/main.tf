@@ -1,5 +1,5 @@
-# Monthly batch: S3 drop -> EventBridge -> SageMaker Pipeline (Predict + Evaluate) -> S3 predictions/ + performance/.
-# See docs/ARCHITECTURE.md for the diagram and reasoning.
+# Monthly batch: S3 data/ drop -> EventBridge -> SageMaker Pipeline (Predict + Evaluate) -> S3 output/.
+# See docs/ARCHITECTURE.md for the process and reasoning.
 
 terraform {
   required_version = ">= 1.6"
@@ -23,11 +23,23 @@ locals {
   s3      = "s3://${local.bucket}"
   image   = "${aws_ecr_repository.image.repository_url}:${var.image_tag}"
   input   = "/opt/ml/processing/input"
+  # S3 prefixes: the same layout as the repo (data/, models/, output/)
+  prefix = {
+    consumption = "data/consumption"
+    movies      = "data/movies"
+    models      = "models"
+    predictions = "output/predictions"
+    performance = "output/performance"
+  }
 }
 
 # ---------- Storage: one bucket, one prefix per role ----------
-# consumption/  monthly drops (trigger)     movies/  monthly metadata snapshots (YYYY-MM.csv, uploaded first)
-# models/       model versions               predictions/input_month=YYYY-MM-DD/   performance/<month>.json
+# s3://…/data/movies/YYYY-MM.csv                                    monthly metadata snapshot (trigger)
+# s3://…/data/consumption/YYYY-MM.csv                               monthly consumption (trigger)
+# s3://…/models/v1/model.pkl                                        model versions (+ feature_schema.json, drift_reference.json)
+# s3://…/output/predictions/input_month=YYYY-MM-DD/predictions.csv
+# s3://…/output/predictions/input_month=YYYY-MM-DD/summary.json
+# s3://…/output/performance/YYYY-MM-DD.json                         accuracy of the predictions for that month
 
 resource "aws_s3_bucket" "data" {
   bucket = local.bucket
@@ -52,10 +64,11 @@ resource "aws_s3_bucket_notification" "data" {
 }
 
 resource "aws_s3_object" "model_v1" {
-  bucket = aws_s3_bucket.data.id
-  key    = "models/v1/model.pkl"
-  source = "${path.module}/../artifacts/movie_consumption_model.pkl"
-  etag   = filemd5("${path.module}/../artifacts/movie_consumption_model.pkl")
+  for_each = fileset("${path.module}/../models/v1", "*") # the repo's models/v1/, mirrored
+  bucket   = aws_s3_bucket.data.id
+  key      = "${local.prefix.models}/v1/${each.value}"
+  source   = "${path.module}/../models/v1/${each.value}"
+  etag     = filemd5("${path.module}/../models/v1/${each.value}")
 }
 
 # ---------- Image ----------
@@ -80,7 +93,7 @@ data "aws_iam_policy_document" "sagemaker" {
   statement {
     sid       = "ReadInputs"
     actions   = ["s3:GetObject"]
-    resources = [for prefix in ["consumption", "movies", "models", "predictions"] : "${aws_s3_bucket.data.arn}/${prefix}/*"]
+    resources = [for name in ["consumption", "movies", "models", "predictions"] : "${aws_s3_bucket.data.arn}/${local.prefix[name]}/*"]
   }
   statement {
     sid       = "ListInputs"
@@ -90,7 +103,7 @@ data "aws_iam_policy_document" "sagemaker" {
   statement {
     sid       = "WriteOutputs"
     actions   = ["s3:PutObject"]
-    resources = [for prefix in ["predictions", "performance"] : "${aws_s3_bucket.data.arn}/${prefix}/*"]
+    resources = [for name in ["predictions", "performance"] : "${aws_s3_bucket.data.arn}/${local.prefix[name]}/*"]
   }
   statement {
     sid       = "PullImage"
@@ -134,11 +147,11 @@ resource "aws_iam_role_policy" "sagemaker" {
 
 locals {
   proc = "/opt/ml/processing"
-  step_inputs = { # name -> S3 URI (pipeline expressions allowed)
-    consumption = { "Std:Join" = { On = "/", Values = [local.s3, { Get = "Parameters.InputKey" }] } }
-    movies      = "${local.s3}/movies" # all snapshots (small), predict picks the input month's
+  step_inputs = {                                           # name -> S3 URI (pipeline expressions allowed)
+    consumption = "${local.s3}/${local.prefix.consumption}" # all months (small); the CLI picks the triggering month's file
+    movies      = "${local.s3}/${local.prefix.movies}"
     model       = { Get = "Parameters.ModelUri" }
-    predictions = "${local.s3}/predictions" # all past runs (small), evaluate picks the month it needs
+    predictions = "${local.s3}/${local.prefix.predictions}" # all past runs (small), evaluate picks the month it needs
   }
   processing_input = { for name, uri in local.step_inputs : name => {
     InputName = name
@@ -152,7 +165,7 @@ locals {
   } }
   processing_output = { for name in ["predictions", "performance"] : name => {
     OutputName = name
-    S3Output   = { S3Uri = "${local.s3}/${name}", LocalPath = "${local.proc}/${name}", S3UploadMode = "EndOfJob" }
+    S3Output   = { S3Uri = "${local.s3}/${local.prefix[name]}", LocalPath = "${local.proc}/${name}", S3UploadMode = "EndOfJob" }
   } }
   step_common = {
     RoleArn             = aws_iam_role.sagemaker.arn
@@ -161,10 +174,11 @@ locals {
   }
 }
 
-resource "aws_s3_object" "predictions_placeholder" {
-  bucket  = aws_s3_bucket.data.id
-  key     = "predictions/README.txt" # the Evaluate input prefix must not be empty on the first month
-  content = "Monthly predictions: input_month=YYYY-MM-DD/predictions.csv + summary.json\n"
+resource "aws_s3_object" "placeholder" {
+  for_each = toset(["consumption", "movies", "predictions"]) # a mounted input prefix must not be empty (first month)
+  bucket   = aws_s3_bucket.data.id
+  key      = "${local.prefix[each.key]}/README.txt" # not *.csv, so it doesn't trigger a run
+  content  = "Monthly files for ${local.prefix[each.key]}/.\n"
 }
 
 resource "aws_sagemaker_pipeline" "forecast" {
@@ -175,8 +189,8 @@ resource "aws_sagemaker_pipeline" "forecast" {
   pipeline_definition = jsonencode({
     Version = "2020-12-01"
     Parameters = [
-      { Name = "InputKey", Type = "String", DefaultValue = "consumption/2026-05.csv" }, # set by EventBridge
-      { Name = "ModelUri", Type = "String", DefaultValue = "${local.s3}/${aws_s3_object.model_v1.key}" },
+      { Name = "InputKey", Type = "String", DefaultValue = "data/consumption/2026-05.csv" }, # set by EventBridge
+      { Name = "ModelUri", Type = "String", DefaultValue = "${local.s3}/${aws_s3_object.model_v1["model.pkl"].key}" },
     ]
     Steps = [
       {
@@ -190,8 +204,8 @@ resource "aws_sagemaker_pipeline" "forecast" {
               "--consumption", "${local.input}/consumption",
               "--movies", "${local.input}/movies",
               "--model", "${local.input}/model",
-              "--output-dir", "${local.proc}/predictions",
-              "--partition-by-month", # -> predictions/input_month=YYYY-MM-DD/, reruns overwrite
+              "--output-dir", "${local.proc}/predictions",      # -> input_month=YYYY-MM-DD/, reruns overwrite
+              "--trigger-key", { Get = "Parameters.InputKey" }, # waits (exit 0) until both monthly files exist
             ]
           }
           ProcessingInputs       = [for name in ["consumption", "movies", "model"] : local.processing_input[name]]
@@ -208,7 +222,8 @@ resource "aws_sagemaker_pipeline" "forecast" {
               "evaluate",
               "--actuals", "${local.input}/consumption", # this month's file = actuals for last month
               "--predictions", "${local.input}/predictions",
-              "--history-dir", "${local.proc}/performance", # -> performance/<month>.json
+              "--history-dir", "${local.proc}/performance", # -> output/performance/YYYY-MM-DD.json
+              "--trigger-key", { Get = "Parameters.InputKey" },
             ]
           }
           ProcessingInputs       = [for name in ["consumption", "predictions"] : local.processing_input[name]]
@@ -219,7 +234,7 @@ resource "aws_sagemaker_pipeline" "forecast" {
   })
 }
 
-# ---------- Trigger: new file under consumption/ starts the pipeline ----------
+# ---------- Trigger: either monthly file starts the pipeline; it runs once both exist ----------
 
 resource "aws_iam_role" "events" {
   name = "${var.name}-events"
@@ -237,20 +252,20 @@ resource "aws_iam_role_policy" "events" {
   })
 }
 
-resource "aws_cloudwatch_event_rule" "new_consumption" {
-  name = "${var.name}-new-consumption"
+resource "aws_cloudwatch_event_rule" "new_monthly_file" {
+  name = "${var.name}-new-monthly-file"
   event_pattern = jsonencode({
     source        = ["aws.s3"]
     "detail-type" = ["Object Created"]
     detail = {
       bucket = { name = [aws_s3_bucket.data.id] }
-      object = { key = [{ prefix = "consumption/" }] }
+      object = { key = [{ wildcard = "${local.prefix.consumption}/*.csv" }, { wildcard = "${local.prefix.movies}/*.csv" }] }
     }
   })
 }
 
 resource "aws_cloudwatch_event_target" "start_pipeline" {
-  rule     = aws_cloudwatch_event_rule.new_consumption.name
+  rule     = aws_cloudwatch_event_rule.new_monthly_file.name
   arn      = aws_sagemaker_pipeline.forecast.arn
   role_arn = aws_iam_role.events.arn
   sagemaker_pipeline_target {

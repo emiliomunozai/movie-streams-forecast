@@ -28,13 +28,13 @@ FEATURES = {
 
 @st.cache_resource
 def model():
-    return load_model(ROOT / "artifacts/movie_consumption_model.pkl")
+    return load_model(ROOT / "models/v1/model.pkl")
 
 
 @st.cache_data
 def drift_reference():
     """Training-month input statistics (built by `cli reference`); the UI never reads training data."""
-    return json.loads((ROOT / "artifacts/drift_reference.json").read_text())
+    return json.loads((ROOT / "models/v1/drift_reference.json").read_text())
 
 
 HOW_TO_READ = {
@@ -79,7 +79,7 @@ with st.sidebar:
         movies_file = st.file_uploader("Title metadata (CSV)", type="csv")
         consumption_file = st.file_uploader("Monthly consumption (CSV)", type="csv")
     else:
-        movies_file, consumption_file = ROOT / "data/inference_movies.csv", ROOT / "data/inference_consumption.csv"
+        movies_file, consumption_file = ROOT / "data/movies/2026-05.csv", ROOT / "data/consumption/2026-05.csv"
         st.caption("Sample: 100 titles, May 2026 consumption.")
     month = st.text_input("Input month", placeholder="Auto-detect",
                           help="YYYY-MM-DD. Defaults to the single month in the consumption file.") or None
@@ -204,7 +204,7 @@ with monitoring:
                     help="More than 25% of rows outside the training 5th–95th percentile range.")
 
     st.subheader("Accuracy by month", help=HOW_TO_READ["accuracy"])
-    history = load_history(ROOT / "artifacts/performance")
+    history = load_history(ROOT / "output/performance")
     if history.empty:
         st.caption("No evaluated months yet.")
     else:

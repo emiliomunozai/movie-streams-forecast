@@ -29,7 +29,7 @@ CHECKS = []
 # category values seen in training, per model feature (the model silently ignores any other value)
 KNOWN = {
     column: set(shares) for column, shares in
-    json.loads((Path(__file__).resolve().parents[1] / "artifacts/drift_reference.json").read_text())["categorical"].items()
+    json.loads((Path(__file__).resolve().parents[1] / "models/v1/drift_reference.json").read_text())["categorical"].items()
 }
 
 

@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -15,10 +16,14 @@ from src.monitoring import drift_reference, score_predictions
 from src.pipeline import build_features, load_model, read_csv, run
 
 ROOT = Path(__file__).resolve().parents[1]
-MOVIES = ROOT / "data/inference_movies.csv"
-CONSUMPTION = ROOT / "data/inference_consumption.csv"
+# the same layout as the S3 bucket (see docs/ARCHITECTURE.md, "Every path")
+MOVIES, CONSUMPTION = ROOT / "data/movies", ROOT / "data/consumption"  # YYYY-MM.csv each
+MODEL = ROOT / "models/v1/model.pkl"
+PREDICTIONS, PERFORMANCE = ROOT / "output/predictions", ROOT / "output/performance"
 app = typer.Typer(no_args_is_help=True)
-MONTH_HELP = "Input month (YYYY-MM-DD). Default: the only month in the consumption file."
+MONTH_HELP = "Input month (YYYY-MM): picks YYYY-MM.csv in the input folders. Default: the only file there."
+TRIGGER_HELP = ("S3 key that started the run (movies/YYYY-MM.csv or consumption/YYYY-MM.csv): picks that month's files "
+                "from the input folders, and exits 0 while the month's other file hasn't landed yet.")
 
 
 def single_file(path, month=None):
@@ -34,6 +39,21 @@ def single_file(path, month=None):
     if len(files) != 1:
         raise ValueError(f"{path}: expected exactly one {month[:7] + ' ' if month else ''}file, found {len(files)}")
     return files[0]
+
+
+def month_of(key):
+    """'movies/2026-05.csv' or 'consumption/2026-05.csv' -> '2026-05-01'."""
+    if not re.fullmatch(r"\d{4}-\d{2}", stem := Path(key).stem):
+        raise ValueError(f"{key}: monthly files must be named YYYY-MM.csv")
+    return f"{stem}-01"
+
+
+def waiting(month, *folders):
+    """Both monthly files trigger a run; whichever lands first finds the other missing and waits (not an error)."""
+    missing = [f"{f.name}/{month[:7]}.csv" for f in folders if not any(p.stem == month[:7] for p in f.iterdir())]
+    if missing:
+        logging.info("waiting for %s: the run starts when it lands", missing)
+    return missing
 
 
 @contextmanager
@@ -65,7 +85,7 @@ def check(
 ):
     """Validate the input files without predicting (e.g. before uploading them)."""
     with exit_on_error(movies, consumption):
-        consumption_raw = read_csv(single_file(consumption))
+        consumption_raw = read_csv(single_file(consumption, month))
         month = resolve_month(consumption_raw, month)
         issues = validate(read_csv(single_file(movies, month)), consumption_raw, month)
         errors = sum(issue["severity"] == ERROR for issue in issues)
@@ -78,21 +98,24 @@ def check(
 def predict(
     movies: Path = MOVIES,
     consumption: Path = CONSUMPTION,
-    model: Path = ROOT / "artifacts/movie_consumption_model.pkl",
+    model: Path = MODEL,
     month: Annotated[str | None, typer.Option(help=MONTH_HELP)] = None,
-    output_dir: Path = ROOT / "output",
-    partition_by_month: Annotated[bool, typer.Option(help="Write to OUTPUT_DIR/input_month=YYYY-MM-DD/ (reruns overwrite).")] = False,
+    output_dir: Path = PREDICTIONS,
+    trigger_key: Annotated[str | None, typer.Option(help=TRIGGER_HELP)] = None,
 ):
-    """Check the inputs, then write predictions.csv and summary.json to OUTPUT_DIR."""
+    """Check the inputs, then write OUTPUT_DIR/input_month=YYYY-MM-DD/predictions.csv and summary.json (reruns overwrite)."""
     with exit_on_error(movies, consumption):
-        consumption_raw = read_csv(single_file(consumption))
+        if trigger_key:
+            month = month_of(trigger_key)
+            if waiting(month, consumption, movies):
+                return
+        consumption_raw = read_csv(single_file(consumption, month))
         month = resolve_month(consumption_raw, month)  # also picks the movies snapshot of that month
         predictions, summary, _ = run(
             read_csv(single_file(movies, month)), consumption_raw, load_model(single_file(model)), month
         )
 
-    if partition_by_month:
-        output_dir = output_dir / f"input_month={summary['input_month']}"
+    output_dir = output_dir / f"input_month={summary['input_month']}"
     output_dir.mkdir(parents=True, exist_ok=True)
     predictions.to_csv(output_dir / "predictions.csv", index=False, float_format="%.2f")
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
@@ -102,13 +125,17 @@ def predict(
 @app.command()
 def evaluate(
     actuals: Annotated[Path, typer.Option(help="Consumption file of the month that was predicted.")],
-    predictions: Annotated[Path, typer.Option(help="predictions.csv, or a folder searched recursively.")] = ROOT / "output",
-    history_dir: Path = ROOT / "artifacts/performance",
+    predictions: Annotated[Path, typer.Option(help="predictions.csv, or a folder searched recursively.")] = PREDICTIONS,
+    history_dir: Path = PERFORMANCE,
+    trigger_key: Annotated[str | None, typer.Option(help=TRIGGER_HELP)] = None,
 ):
-    """Score earlier predictions once their target month's consumption arrives; writes HISTORY_DIR/<month>.json."""
+    """Score earlier predictions once their target month's consumption arrives; writes HISTORY_DIR/YYYY-MM-DD.json."""
     with exit_on_error():
-        actuals_raw = read_csv(single_file(actuals))
-        month = resolve_month(actuals_raw)
+        month = month_of(trigger_key) if trigger_key else None
+        if month and waiting(month, actuals):
+            return
+        actuals_raw = read_csv(single_file(actuals, month))
+        month = resolve_month(actuals_raw, month)
         files = [predictions] if predictions.is_file() else sorted(predictions.rglob("predictions.csv"))
         found = pd.concat([pd.read_csv(f, dtype={"TITLE_ID": "string"}) for f in files] or [pd.DataFrame(columns=["target_month"])])
         found = found[found["target_month"].eq(month)]
@@ -125,10 +152,10 @@ def evaluate(
 
 @app.command()
 def reference(
-    movies: Path = ROOT / "data/train_movies.csv",
-    consumption: Path = ROOT / "data/train_consumption.csv",
+    movies: Annotated[Path, typer.Option(help="train_movies.csv from the challenge package (not in this repo).")],
+    consumption: Annotated[Path, typer.Option(help="train_consumption.csv from the challenge package.")],
     month: str = "2026-05-01",
-    output: Path = ROOT / "artifacts/drift_reference.json",
+    output: Path = MODEL.parent / "drift_reference.json",
 ):
     """Save the input statistics of the training month: the drift reference the UI compares each run against."""
     with exit_on_error():

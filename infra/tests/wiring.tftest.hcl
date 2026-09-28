@@ -41,8 +41,8 @@ run "wiring" {
   }
 
   assert {
-    condition     = jsondecode(aws_cloudwatch_event_rule.new_consumption.event_pattern).detail.object.key[0].prefix == "consumption/"
-    error_message = "only uploads under consumption/ should trigger the pipeline"
+    condition     = jsondecode(aws_cloudwatch_event_rule.new_monthly_file.event_pattern).detail.object.key == [{ wildcard = "data/consumption/*.csv" }, { wildcard = "data/movies/*.csv" }]
+    error_message = "only the two monthly CSVs (data/consumption/, data/movies/) should trigger the pipeline"
   }
 
   assert {
@@ -62,7 +62,7 @@ run "wiring" {
       "--movies", "/opt/ml/processing/input/movies",
       "--model", "/opt/ml/processing/input/model",
       "--output-dir", "/opt/ml/processing/predictions",
-      "--partition-by-month",
+      "--trigger-key", { Get = "Parameters.InputKey" },
     ]
     error_message = "predict must run the same CLI command as tested locally in Docker"
   }
@@ -73,20 +73,25 @@ run "wiring" {
         for arg in step.Arguments.AppSpecification.ContainerArguments : contains(concat(
           [for i in step.Arguments.ProcessingInputs : i.S3Input.LocalPath],
           [for o in step.Arguments.ProcessingOutputConfig.Outputs : o.S3Output.LocalPath],
-        ), arg) if startswith(arg, "/opt/ml/processing/")
+        ), arg) if try(startswith(arg, "/opt/ml/processing/"), false)
       ])
     ])
     error_message = "every path a step's command uses must be mounted as an input or output of that step"
   }
 
   assert {
-    condition     = [for i in jsondecode(aws_sagemaker_pipeline.forecast.pipeline_definition).Steps[0].Arguments.ProcessingInputs : i.S3Input.S3Uri if i.InputName == "movies"] == ["s3://movie-streams-forecast-123456789012/movies"]
-    error_message = "predict must mount the monthly movie snapshots under movies/"
+    condition     = { for i in jsondecode(aws_sagemaker_pipeline.forecast.pipeline_definition).Steps[0].Arguments.ProcessingInputs : i.InputName => i.S3Input.S3Uri if i.InputName != "model" } == { consumption = "s3://movie-streams-forecast-123456789012/data/consumption", movies = "s3://movie-streams-forecast-123456789012/data/movies" }
+    error_message = "predict must mount both monthly folders (it picks the triggering month's files)"
   }
 
   assert {
-    condition     = jsondecode(aws_sagemaker_pipeline.forecast.pipeline_definition).Steps[1].Arguments.ProcessingOutputConfig.Outputs[0].S3Output.S3Uri == "s3://movie-streams-forecast-123456789012/performance"
-    error_message = "evaluations must land in performance/"
+    condition     = alltrue([for step in jsondecode(aws_sagemaker_pipeline.forecast.pipeline_definition).Steps : contains(step.Arguments.AppSpecification.ContainerArguments, "--trigger-key")])
+    error_message = "both steps must get the triggering key, so they wait until both monthly files exist"
+  }
+
+  assert {
+    condition     = jsondecode(aws_sagemaker_pipeline.forecast.pipeline_definition).Steps[1].Arguments.ProcessingOutputConfig.Outputs[0].S3Output.S3Uri == "s3://movie-streams-forecast-123456789012/output/performance"
+    error_message = "evaluations must land in output/performance/"
   }
 
   assert {
