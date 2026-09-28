@@ -1,8 +1,16 @@
+# The image needs: pyproject.toml, uv.lock, .python-version, src/, models/, data/, output/performance/, .streamlit/
 .git
+.gitignore
+.dockerignore
+Dockerfile
 .venv
 .pytest_cache
-__pycache__
-output/predictions
-tests
+.ruff_cache
+**/__pycache__
+**/.DS_Store
+README.md
+requirements.txt
 docs
+tests
 infra
+output/predictions

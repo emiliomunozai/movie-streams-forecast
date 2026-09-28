@@ -12,7 +12,7 @@ Each requirement of *Movie Consumption Prediction Challenge* (the .docx) and how
 | Load the model, no retraining, no new preprocessing | `pickle.load` + `model.predict`; the model's own fitted encoders do the encoding and imputation; columns passed in `model.feature_names_in_` order | `test_feature_order_matches_schema` |
 | One prediction per combination observed in May | Only rows of the input month are used; 321 combinations → 321 predictions, 0 duplicates, 0 NaN | `output/predictions/input_month=2026-05-01/predictions.csv` · `test_other_months_are_ignored` |
 | Columns `TITLE_ID, country, platform, predicted_june_streams` | All four, plus `input_streams`, `input_month`, `target_month` for usability | `test_output_columns_and_values` |
-| Runs locally with clear instructions | `uv sync` + `uv run python -m src.cli predict`, or `pip install -r requirements.txt`, or Docker; Typer CLI with `check`, `predict`, `evaluate`, `ui` | `README.md` Quickstart · `test_cli` |
+| Runs locally with clear instructions | `uv sync` + `uv run python -m src.cli predict`, or `pip install -r requirements.txt`, or Docker; Typer CLI with `check`, `predict`, `evaluate`, `ui` | `README.md` *Run it* · `test_cli` |
 | Use only inference-file information (no June data) | Features come only from the input month's file; June is never read at inference; the UI's drift reference is saved stats, not training data | `test_drift_reference_is_up_to_date_and_stable` |
 | Reuse fitted transformations | Nothing is fitted anywhere in `src/`; unseen categories are reported, not re-encoded | `unseen_categories` in `summary.json` |
 | Ratings/votes assumed available end of May | Accepted and listed as a limitation (possible look-ahead) | `README.md` Known limitations |
@@ -24,7 +24,7 @@ Each requirement of *Movie Consumption Prediction Challenge* (the .docx) and how
 | Error handling | 15 pluggable data checks run before predicting (errors stop, warnings go to `summary.json`); messages name the CSV lines; the CLI exits 1 with one log line instead of a traceback, also for a corrupt/incompatible model or a file without a `month` column |
 | Self-repair prompt | A failed check also produces a short prompt to paste into an AI coding agent that fixes the files (CLI log, CloudWatch, UI) |
 | Spelling/format safety | `category_spelling` (`netflix`, ` Brazil`, `HBO-Max` would be silently ignored by the model) and `ids_well_formed` (`tt\d+`) |
-| Automated tests | 41 pytest (~2 s): every check has a break case, grain, notebook rebuild (reads the training files from the challenge package, skips without them), CLI, SageMaker folder layout, the either-file trigger, the app; plus `terraform test` against a mocked AWS provider |
+| Automated tests | 35 pytest (~2 s): every check has a break case, grain, notebook rebuild (reads the training files from the challenge package, skips without them), CLI, SageMaker folder layout, the either-file trigger, the app; plus `terraform test` against a mocked AWS provider |
 | Logging | Standard `logging`, one line per issue; CloudWatch in AWS |
 | Reproducible deployment | `uv.lock` pins the pickle's versions (Python 3.13, scikit-learn 1.8.0); one Docker image for local, SageMaker and Render, verified identical on arm64 and amd64 |
 
