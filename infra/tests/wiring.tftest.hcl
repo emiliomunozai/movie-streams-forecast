@@ -80,6 +80,11 @@ run "wiring" {
   }
 
   assert {
+    condition     = [for i in jsondecode(aws_sagemaker_pipeline.forecast.pipeline_definition).Steps[0].Arguments.ProcessingInputs : i.S3Input.S3Uri if i.InputName == "movies"] == ["s3://movie-streams-forecast-123456789012/movies"]
+    error_message = "predict must mount the monthly movie snapshots under movies/"
+  }
+
+  assert {
     condition     = jsondecode(aws_sagemaker_pipeline.forecast.pipeline_definition).Steps[1].Arguments.ProcessingOutputConfig.Outputs[0].S3Output.S3Uri == "s3://movie-streams-forecast-123456789012/performance"
     error_message = "evaluations must land in performance/"
   }

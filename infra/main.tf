@@ -26,7 +26,7 @@ locals {
 }
 
 # ---------- Storage: one bucket, one prefix per role ----------
-# consumption/  monthly drops (trigger)     reference/  movie catalog
+# consumption/  monthly drops (trigger)     movies/  monthly metadata snapshots (YYYY-MM.csv, uploaded first)
 # models/       model versions               predictions/input_month=YYYY-MM-DD/   performance/<month>.json
 
 resource "aws_s3_bucket" "data" {
@@ -80,7 +80,7 @@ data "aws_iam_policy_document" "sagemaker" {
   statement {
     sid       = "ReadInputs"
     actions   = ["s3:GetObject"]
-    resources = [for prefix in ["consumption", "reference", "models", "predictions"] : "${aws_s3_bucket.data.arn}/${prefix}/*"]
+    resources = [for prefix in ["consumption", "movies", "models", "predictions"] : "${aws_s3_bucket.data.arn}/${prefix}/*"]
   }
   statement {
     sid       = "ListInputs"
@@ -136,7 +136,7 @@ locals {
   proc = "/opt/ml/processing"
   step_inputs = { # name -> S3 URI (pipeline expressions allowed)
     consumption = { "Std:Join" = { On = "/", Values = [local.s3, { Get = "Parameters.InputKey" }] } }
-    movies      = { Get = "Parameters.MoviesUri" }
+    movies      = "${local.s3}/movies" # all snapshots (small), predict picks the input month's
     model       = { Get = "Parameters.ModelUri" }
     predictions = "${local.s3}/predictions" # all past runs (small), evaluate picks the month it needs
   }
@@ -176,7 +176,6 @@ resource "aws_sagemaker_pipeline" "forecast" {
     Version = "2020-12-01"
     Parameters = [
       { Name = "InputKey", Type = "String", DefaultValue = "consumption/2026-05.csv" }, # set by EventBridge
-      { Name = "MoviesUri", Type = "String", DefaultValue = "${local.s3}/reference/movies.csv" },
       { Name = "ModelUri", Type = "String", DefaultValue = "${local.s3}/${aws_s3_object.model_v1.key}" },
     ]
     Steps = [

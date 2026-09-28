@@ -38,9 +38,9 @@ REPO=$(terraform output -raw ecr_repository_url)
 aws ecr get-login-password | docker login --username AWS --password-stdin ${REPO%%/*}
 docker build --platform linux/amd64 -t $REPO:$TAG .. && docker push $REPO:$TAG
 
-# 3. data: catalog once, then a consumption file every month (this upload triggers a run)
+# 3. data, every month: the movie metadata snapshot first, then consumption (this upload triggers a run)
 BUCKET=$(terraform output -raw bucket)
-aws s3 cp ../data/inference_movies.csv s3://$BUCKET/reference/movies.csv
+aws s3 cp ../data/inference_movies.csv s3://$BUCKET/movies/2026-05.csv
 aws s3 cp ../data/inference_consumption.csv s3://$BUCKET/consumption/2026-05.csv
 
 # 4. result
@@ -55,7 +55,7 @@ aws s3 ls s3://$BUCKET/predictions/ --recursive
 
 - Credentials come from the environment (`AWS_PROFILE` etc.), and nothing is hardcoded. State is local; a team would add an S3 backend.
 - One account and region (`eu-west-1` default). No VPC: the job only talks to S3/ECR/CloudWatch over AWS endpoints.
-- Each monthly file contains one month (the container infers it). The movie catalog at `reference/movies.csv` covers the month's titles; missing ones are predicted with imputed attributes and reported as warnings.
+- Each monthly file contains one month (the container infers it). Movie metadata arrives as a monthly snapshot `movies/YYYY-MM.csv`, uploaded before that month's consumption file. Predict uses the snapshot of the input month and fails (SNS alert) if it is missing. Titles missing from the snapshot are predicted with imputed attributes and reported as warnings.
 - The default S3-managed encryption is enough (no KMS key).
 
 ## Not verified without an account
