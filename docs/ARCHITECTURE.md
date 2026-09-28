@@ -1,129 +1,102 @@
 # Architecture
 
-## Principle: hexagonal-lite (one core, thin adapters, one image)
+**AWS, in one line:** two files arrive monthly, `s3://…/data/movies/YYYY-MM.csv` and `s3://…/data/consumption/YYYY-MM.csv`, in any order → each upload triggers EventBridge → SageMaker Pipeline; the run for the first file waits, the second one runs our image twice in parallel (**Predict** this month, **Evaluate** last month) → `s3://…/output/predictions/input_month=YYYY-MM-DD/predictions.csv`, `s3://…/output/predictions/input_month=YYYY-MM-DD/summary.json`, `s3://…/output/performance/YYYY-MM-DD.json`; a failed run → SNS email.
 
-```mermaid
-flowchart TB
-    subgraph core["Core: pure functions on DataFrames + a model (no AWS, no UI, no paths)"]
-        direction LR
-        K["checks.py<br/>validate raw files"] --> P["pipeline.py<br/>aggregate month per grain → join movies<br/>→ features in schema order → predict"]
-        P --> M["monitoring.py<br/>drift vs training · score vs actuals"]
-    end
-    CLI["CLI (Typer)<br/>check · predict · evaluate · ui"] --> core
-    UI["UI (Streamlit)<br/>predictions · ModelOps dashboard"] --> core
-    T["tests"] --> core
-    CLI & UI --> IMG[["one Docker image"]]
-    IMG --> AWS["AWS SageMaker: monthly batch"]
-    IMG --> WEB["Render: live demo"]
-    IMG --> LOCAL["local: uv / docker run"]
-```
+The same code (`run()`: checks → features → predict) runs in three places, and the repo and the bucket share one folder layout ([every path](#every-path-locally-and-in-s3)). Only the way data comes in and goes out differs.
 
-- **The core** (`checks.py`, `pipeline.py`, `monitoring.py`) takes DataFrames and a model and returns DataFrames and dicts. It doesn't know where data comes from.
-- **Driving adapters** (the CLI, the Streamlit UI and the tests) call the core, so the batch job and the live app can't drift apart.
-- **The runtime contract** is "files in folders + a CLI command". SageMaker meets it by mounting S3 as folders, and AWS Batch, ECS, Cloud Run Jobs or Airflow would meet it the same way. **Changing platform changes Terraform, not Python.**
-- **No formal port interfaces:** there's one storage kind (files), so an abstraction would be speculative. A second source (e.g. a database) would get its own reader module, and the core wouldn't change.
-
-## The process, step by step: local vs Streamlit app vs AWS
-
-All three run the same code, `run()` (checks → features → predict), and can run the same Docker image; only the way data comes in and goes out differs.
+## 1 · The process, step by step
 
 | Step | Local (CLI) | Streamlit app (Render) | AWS (SageMaker) |
 |---|---|---|---|
-| **1. Data arrives** | CSV files on disk: `data/*.csv` by default, or any path via `--movies` / `--consumption` | The user uploads the movies and consumption CSVs in the sidebar (or picks the sample files) | Upstream uploads `movies/YYYY-MM.csv`, then `consumption/YYYY-MM.csv` to the S3 bucket |
-| **2. Run starts** | You run `uv run python -m src.cli predict` (or `docker run <image> predict`) | Streamlit reruns the script as soon as both files are there | S3 "Object Created" → EventBridge rule (prefix `consumption/`) → `StartPipelineExecution` with `InputKey` = the file key |
-| **3. Files reach the code** | Read straight from the given paths (a file, or a folder holding one file) | Uploaded files are read in memory (`read_csv`) | SageMaker downloads each S3 input into a folder under `/opt/ml/processing/input/`; the CLI picks the file (and that month's movie snapshot) |
-| **4. Model loaded** | `artifacts/movie_consumption_model.pkl`, or `--model <path>` | `artifacts/movie_consumption_model.pkl` baked into the image, loaded once (`st.cache_resource`) | `models/v1/model.pkl` from S3 (`ModelUri` parameter), so a new model needs no rebuild |
-| **5. Month** | Inferred from the file, or `--month YYYY-MM-DD` | Inferred from the file, or typed in the sidebar | Inferred from the file (EventBridge can't parse it from the key) |
-| **6. Data checks** | 15 checks (also alone with `cli check`); errors exit 1, the log has the check, CSV lines and fix prompt | 15 checks; errors show a table + a copyable fix prompt and stop | Same 15 checks; errors fail the step, the log has the check, CSV lines and fix prompt |
-| **7. Features + predict** | `run()` via `cli predict` | `run()`: sum per movie × country × platform, join movies, predict with the model's own preprocessing | Same `run()`, via `cli predict --partition-by-month` (Predict step) |
-| **8. Results out** | `output/predictions.csv` + `summary.json` | Tables and charts on screen + CSV download | `s3://…/predictions/input_month=YYYY-MM-DD/predictions.csv + summary.json` |
-| **9. Accuracy** | `cli evaluate --actuals <next month's file>` → `artifacts/performance/<month>.json` | Monitoring tab reads the accuracy history (`artifacts/performance/`) | Evaluate step, in parallel: this month's file scores last month's predictions → `performance/<month>.json` |
-| **10. Monitoring** | Terminal log + `summary.json` (or `cli ui` for the dashboard) | Tabs: drift vs training, data quality, accuracy by month | CloudWatch Logs; pipeline `Failed` → EventBridge → SNS email |
-| **11. Who consumes it** | You, or any script reading `output/` | The person using the app | Downstream: Athena / BI / apps reading `predictions/` and `performance/` |
-| **Defined in** | `pyproject.toml` + `uv.lock` (or the `Dockerfile`) | `Dockerfile` + Render service (auto-deploy on push) | `infra/*.tf` (S3, ECR, IAM, Pipeline, EventBridge, SNS) |
+| **1. Data arrives** | `data/movies/YYYY-MM.csv` and `data/consumption/YYYY-MM.csv` (the repo ships `2026-05`), or any path via `--movies` / `--consumption` | The user uploads the movies and consumption CSVs in the sidebar (or picks the sample files) | Upstream uploads `s3://…/data/movies/YYYY-MM.csv` and `s3://…/data/consumption/YYYY-MM.csv`, in any order |
+| **2. Run starts** | You run `uv run python -m src.cli predict` (or `docker run <image> predict`) | Streamlit reruns the script as soon as both files are there | Each upload: S3 "Object Created" → EventBridge rule (`data/consumption/*.csv` or `data/movies/*.csv`) → `StartPipelineExecution` with `InputKey` = the file key. If the month's other file isn't there yet, the run logs "waiting" and ends successfully; the second upload does the real run |
+| **3. Files reach the code** | The CLI picks the month's `YYYY-MM.csv` in each folder (or reads a given file) | Uploaded files are read in memory | SageMaker downloads `s3://…/data/consumption/` and `s3://…/data/movies/` into folders under `/opt/ml/processing/input/`; the CLI picks the two `YYYY-MM.csv` files of the triggering month |
+| **4. Model loaded** | `models/v1/model.pkl`, or `--model <path>` | The same file, baked into the image, loaded once per process | `s3://…/models/v1/model.pkl` (`ModelUri` parameter), so a new model needs no rebuild |
+| **5. Month** | The only file in the folders, or `--month YYYY-MM` | Inferred from the file, or typed in the sidebar | From the file name in the key (`2026-05.csv` → `2026-05-01`); the `month_present` check confirms the file holds that month |
+| **6. Data checks** | 15 checks (also alone with `cli check`); errors exit 1, the log has the check, CSV lines and fix prompt | Same checks; errors show a table + a copyable fix prompt and stop | Same checks; errors fail the step, the log has the check, CSV lines and fix prompt |
+| **7. Features + predict** | `run()` via `cli predict` | `run()` | `run()` via `cli predict` (Predict step) |
+| **8. Results out** | `output/predictions/input_month=YYYY-MM-DD/predictions.csv`, `output/predictions/input_month=YYYY-MM-DD/summary.json` | Tables and charts on screen + CSV download | `s3://…/output/predictions/input_month=YYYY-MM-DD/predictions.csv`, `s3://…/output/predictions/input_month=YYYY-MM-DD/summary.json` |
+| **9. Accuracy** | `cli evaluate --actuals data/consumption/<next month>.csv` → `output/performance/YYYY-MM-DD.json` | Monitoring tab shows the accuracy history | Evaluate step, in parallel: this month's file scores last month's predictions → `s3://…/output/performance/YYYY-MM-DD.json` |
+| **10. Monitoring** | Terminal log + `output/predictions/input_month=YYYY-MM-DD/summary.json` | Tabs: drift vs training, data quality, accuracy by month | CloudWatch Logs; pipeline `Failed` → EventBridge → SNS email |
+| **11. Who consumes it** | You, or any script reading `output/predictions/input_month=YYYY-MM-DD/predictions.csv` | The person using the app | Downstream: Athena / BI / apps reading `s3://…/output/predictions/input_month=YYYY-MM-DD/predictions.csv` and `s3://…/output/performance/YYYY-MM-DD.json` |
+| **Defined in** | `pyproject.toml` + `uv.lock` (or `requirements.txt`, or the `Dockerfile`) | `Dockerfile` + Render service (auto-deploy on push to `main`) | `infra/*.tf` (S3, ECR, IAM, Pipeline, EventBridge, SNS) |
 
-## Local
-`uv run python -m src.cli check` (validate only) / `uv run python -m src.cli predict …` or `docker run <image> predict …`. `uv run python -m src.cli ui` for the UI (the image's default command).
+## 2 · AWS design (Part 2), in the brief's order
 
-## AWS: monthly batch (Parts 2 + 3)
+| Brief asks | Choice | Why |
+|---|---|---|
+| **Storing the data and the model** | One private, versioned S3 bucket; every path is in the table below. Inputs: `s3://…/data/movies/YYYY-MM.csv` (metadata snapshot), `s3://…/data/consumption/YYYY-MM.csv`, `s3://…/models/v1/model.pkl` | Versioning keeps every input and model. Titles and ratings change monthly, so each month has its own metadata snapshot: reruns of an old month use that month's metadata (no look-ahead), and a missing snapshot fails instead of using a stale one. |
+| **Packaging the model and dependencies** | Our Docker image in ECR, `linux/amd64`, tagged by git SHA (immutable tags) | Prebuilt SageMaker scikit-learn images stop at **1.4-2**; the pickle needs **1.8.0** + Python 3.13. Same image as local and Render (verified: identical predictions on arm64 and amd64). |
+| **Executing it** | **SageMaker Processing Job** (`ml.t3.medium`), inside a **SageMaker Pipeline** with two steps: Predict and Evaluate | Processing runs our script as-is on files. Batch Transform expects already-prepared rows (we need a groupby and a join first); endpoints are for real-time, which isn't needed. The Pipeline gives execution history, parameters, retries and a native EventBridge target, with no servers of our own. |
+| **Starting the inference** | S3 "Object Created" → EventBridge rule matching `data/consumption/*.csv` or `data/movies/*.csv` → `StartPipelineExecution`, passing the key as `InputKey` (`$.detail.object.key`). The CLI reads the month from the key's file name; if the month's other file is missing it logs "waiting" and exits 0 | **Upload order doesn't matter:** whichever file lands second starts the real run, and re-uploading a corrected file re-runs its month. Event-driven, **no Lambda**, no schedule. Reruns are safe because output overwrites its month. |
+| **Storing and retrieving predictions** | `s3://…/output/predictions/input_month=YYYY-MM-DD/predictions.csv` and `s3://…/output/predictions/input_month=YYYY-MM-DD/summary.json` | One folder per month: a predictable path for downstream, idempotent reruns (a rerun overwrites its month), Athena/Hive-partition friendly. Retrieve with `aws s3 cp`, Athena, or any S3 reader. |
+| **Permissions** | **SageMaker role:** read `s3://…/data/consumption/*`, `s3://…/data/movies/*`, `s3://…/models/*`, `s3://…/output/predictions/*`; write `s3://…/output/predictions/*`, `s3://…/output/performance/*`; pull from this ECR repo; write its logs; pass itself only to SageMaker. **EventBridge role:** start this one pipeline. | Least privilege, scoped to prefixes and one pipeline. |
+| **Configuration** | Pipeline parameters `InputKey` (set by EventBridge) and `ModelUri` (default v1); Terraform variables `image_tag`, `region`, `instance_type`, `alert_email` | Every execution records which file and model it used. New model = upload + change `ModelUri`, no image rebuild. New code = new image tag. |
+| **Operational monitoring** | CloudWatch Logs; pipeline `Failed` → EventBridge → SNS email; `summary.json` per run; **Evaluate** scores last month's predictions (MAE, RMSE, WAPE, R², each vs the "next month = this month" baseline) into `s3://…/output/performance/YYYY-MM-DD.json` | Enough for one run a month. No extra trigger for accuracy: the file that starts month *t+1*'s prediction is the ground truth for month *t*. |
 
-```mermaid
-flowchart LR
-    UP["upstream"] -->|"monthly drop<br/>consumption/2026-05.csv"| S3C[("S3 consumption/")]
-    UP -->|"first: movies/2026-05.csv"| MOV
-    S3C -->|"Object Created"| EB["EventBridge rule<br/>prefix consumption/"]
-    EB -->|"StartPipelineExecution<br/>InputKey = $.detail.object.key"| PIPE
-    subgraph PIPE["SageMaker Pipeline (2 parallel steps, same image)"]
-        PJ["Predict · Processing Job<br/>cli predict --partition-by-month"]
-        EJ["Evaluate · Processing Job<br/>cli evaluate"]
-    end
-    ECR[("ECR :git-sha<br/>linux/amd64")] -.->|image| PIPE
-    MOV[("S3 movies/<br/>YYYY-MM.csv snapshots")] -.-> PJ
-    MOD[("S3 models/v1/model.pkl<br/>ModelUri parameter")] -.-> PJ
-    PJ -->|"predictions.csv<br/>summary.json"| S3OUT[("S3 predictions/<br/>input_month=YYYY-MM-DD/")]
-    S3OUT -.->|"last month's predictions"| EJ
-    EJ -->|"MAE, WAPE vs baseline"| PERF[("S3 performance/<br/>YYYY-MM-DD.json")]
-    S3OUT --> DS["downstream<br/>Athena / BI / apps"]
-    PERF --> DS
-    PIPE -.->|logs| CW["CloudWatch Logs"]
-    PIPE -.->|"status Failed"| EB2["EventBridge rule"] --> SNS["SNS → email"]
-```
+### Every path, locally and in S3
 
-**One run, step by step**
-1. Upstream first uploads that month's movie metadata snapshot to `s3://<bucket>/movies/2026-05.csv`, then the consumption file to `s3://<bucket>/consumption/2026-05.csv`. New titles arrive and ratings/votes change every month, so each month gets its own snapshot (as of the end of the month). Predict picks the snapshot of the month it reads from the consumption file and fails if it is missing, instead of using stale metadata. Reruns of an old month use that month's metadata (no look-ahead).
-2. The bucket sends "Object Created" to EventBridge. A rule matching the `consumption/` prefix starts the pipeline and passes the object key as the `InputKey` parameter (a JSON path, `$.detail.object.key`, resolved from the event).
-3. The pipeline runs two Processing Jobs in parallel, same image, different command. SageMaker downloads each input into a folder under `/opt/ml/processing/input/`.
-   - **Predict** runs `predict --consumption … --movies … --model … --output-dir /opt/ml/processing/predictions --partition-by-month`. The month is **read from the file** (a monthly drop contains one month), and the data checks run first. Output: `predictions/input_month=2026-05-01/predictions.csv + summary.json`. A rerun overwrites its own month (idempotent).
-   - **Evaluate** runs `evaluate --actuals …/consumption --predictions …/predictions --history-dir /opt/ml/processing/performance`. This month's file is the **actuals for last month's predictions**: it finds the predictions whose `target_month` is this month and scores them (MAE, RMSE, WAPE, R², each vs the "next month = this month" baseline) into `performance/2026-06-01.json`. The first month has nothing to score and exits cleanly.
-4. On failure of either step (e.g. a data check), the pipeline status goes `Failed` → EventBridge → SNS email. The log names the failed check and the CSV lines.
+The repo and the bucket use the same layout; in S3 each path starts with `s3://…/`. The repo ships one example month (`2026-05`).
+
+| Path | What | Written by | Read by |
+|---|---|---|---|
+| `data/movies/YYYY-MM.csv` | Movie metadata snapshot of that month | Upstream (in S3 it triggers a run) | Predict |
+| `data/consumption/YYYY-MM.csv` | Consumption of that month | Upstream (in S3 it triggers a run) | Predict (input), Evaluate (actuals for last month's predictions) |
+| `models/v1/model.pkl` | The supplied model (later `v2/`, …) | In S3: Terraform uploads the repo's `models/v1/` | Predict (in S3 via `ModelUri`) |
+| `models/v1/feature_schema.json` | The model's input schema | Supplied with the model | Tests |
+| `models/v1/drift_reference.json` | Training statistics of v1 | `cli reference` (from the training files) | Checks (known categories), dashboard (drift) |
+| `output/predictions/input_month=YYYY-MM-DD/predictions.csv` | One prediction per movie × country × platform | Predict | Evaluate (next month), downstream |
+| `output/predictions/input_month=YYYY-MM-DD/summary.json` | Row counts, warnings, unseen categories, totals | Predict | Downstream, monitoring |
+| `output/performance/YYYY-MM-DD.json` | Accuracy of the predictions for that month vs the baseline | Evaluate | Downstream, dashboard |
+| `data/consumption/README.txt`, `data/movies/README.txt`, `output/predictions/README.txt` | S3 only: placeholders, because a mounted folder can't be empty; not `*.csv`, so they never trigger | Terraform | — |
+
+**Checked against AWS docs:** EventBridge → SageMaker Pipeline supports dynamic parameters via JSON path ([docs](https://docs.aws.amazon.com/sagemaker/latest/dg/pipeline-eventbridge.html)); prebuilt scikit-learn containers stop at 1.4-2 ([docs](https://docs.aws.amazon.com/sagemaker/latest/dg/sklearn.html)).
+**Unverified without an AWS account:** the exact pipeline-definition JSON, IAM completeness, and the trigger end to end. To validate: `terraform plan`, then one upload in a sandbox account. See [`infra/README.md`](../infra/README.md).
+
+## 3 · Code structure
+
+| Part | Files | Role |
+|---|---|---|
+| Core | `checks.py`, `pipeline.py`, `monitoring.py` | Pure functions on DataFrames + a model; no AWS, UI or paths |
+| Adapters | `cli.py` (Typer), `app.py` (Streamlit), tests | Call the core, so the batch job and the app can't drift apart |
+| Runtime contract | "files in folders + a CLI command" | SageMaker meets it by mounting S3 as folders; AWS Batch, ECS or Airflow would too. **Changing platform changes Terraform, not Python.** |
+
+## 4 · Live demo (Render)
 
 | Concern | Choice | Why |
 |---|---|---|
-| Compute | **SageMaker Processing Job** (`ml.t3.medium`) | Runs our script as-is on files. Batch Transform expects rows that are already prepared (ours needs a groupby and a join first). Endpoints are for real-time, which isn't needed. The data is tiny, so the smallest instance is enough. |
-| Orchestration | **SageMaker Pipeline** (Predict + Evaluate, in parallel) | Execution history, parameters, retries, and a native EventBridge target, with no servers of our own. Leaves room for the retraining step (see Future). |
-| Trigger | **S3 → EventBridge → Pipeline** | Event-driven, so no schedule to keep in sync with the data. EventBridge passes the file key straight into the pipeline, so **no Lambda**. |
-| Packaging | **Our Docker image in ECR**, `linux/amd64`, tagged by git SHA | Prebuilt SageMaker sklearn images stop at **1.4-2**; the pickle needs **1.8.0** + Python 3.13. Same image as local (verified: identical predictions on arm64 and amd64). |
-| Month | **Inferred from the file**, `--month` optional | EventBridge can pass the key but can't parse a month out of it. A monthly file holds one month; ambiguous files fail loudly. |
-| Model storage | **S3 `models/v1/model.pkl`, versioned bucket** | `ModelUri` is a pipeline parameter (default v1), so every execution records which model it used. New model = upload + change the default, no image rebuild. |
-| Output | **S3 `predictions/input_month=YYYY-MM-DD/`** | One folder per month: predictable for downstream and for Evaluate, reruns are idempotent, and it's Athena/Hive-partition friendly. The pipeline execution (inputs, model, logs) is still visible in SageMaker. |
-| Accuracy tracking | **Evaluate step** in the same run, one JSON per month in `performance/` | No extra trigger: the file that starts month *t+1*'s prediction is the ground truth for month *t*. One small file per month (no read-modify-write of a shared history). The dashboard reads the same files. |
-| Permissions | **SageMaker execution role**: read `consumption/`, `movies/`, `models/`, `predictions/`; write `predictions/`, `performance/`; pull from ECR; write CloudWatch Logs. **EventBridge role**: `sagemaker:StartPipelineExecution` on this pipeline only. | Least privilege, scoped to prefixes and one pipeline. |
-| Monitoring | CloudWatch Logs (`/aws/sagemaker/ProcessingJobs`), EventBridge rule on pipeline status `Failed` → SNS email, `summary.json` per run | Enough for one run a month. See ModelOps below. |
-
-**Resolved (2026-09-27, AWS docs)**
-- EventBridge → SageMaker Pipeline supports **dynamic parameters** via JSON path from the event ([docs](https://docs.aws.amazon.com/sagemaker/latest/dg/pipeline-eventbridge.html)).
-- Prebuilt SageMaker scikit-learn containers support up to **1.4-2** ([docs](https://docs.aws.amazon.com/sagemaker/latest/dg/sklearn.html)), so the custom image is required.
-
-**Unverified without an AWS account**: the exact pipeline-definition JSON, IAM policy completeness, and the S3 → EventBridge → pipeline wiring end to end. How to validate: `terraform validate`/`plan`, then one manual upload in a sandbox account.
-
-## Live demo: Render
-
-| Concern | Choice | Why |
-|---|---|---|
-| UI | **Streamlit** (`src/app.py`) | Upload, tables, charts and download in plain Python. It calls the same `run()` as the CLI, so the app and the batch job can't drift apart. |
-| Hosting | **Render free web service**, built from our `Dockerfile` | Same image as local and SageMaker. Hugging Face Docker Spaces needed PRO. |
+| Hosting | Render free web service built from our `Dockerfile`, command `ui`, port `$PORT` | Same image as local and SageMaker. Hugging Face Docker Spaces needed PRO. |
 | Deploy | Auto-deploy on every push to `main` | No pipeline to maintain for a demo. |
-| Input | Sample files or **CSV upload** | Anyone can try their own month without the CLI. |
-| Validation | Same checks as the CLI; failures show an error table + a **fix prompt** for an AI agent | One set of rules everywhere. |
-| ModelOps | Tabs: Overview, Forecast, Monitoring (drift, accuracy by month), Data quality | Drift compares against saved stats (`drift_reference.json`), so the app never reads training data. |
-| Model | Loaded once per process (`st.cache_resource`) | The pickle is loaded once, not on every interaction. |
-| Cost / limits | Free tier, sleeps when idle (~30–60 s cold start) | Enough for a demo; no cloud bill. |
+| Limits | Free tier sleeps when idle (~30–60 s cold start) | Enough for a demo; no cloud bill. |
 
-- A free Render web service built from the repo's `Dockerfile`: the same image as local and SageMaker, default command `ui`, listening on `$PORT` (set by Render).
-- Redeploys automatically on every push to `main`. The free tier sleeps when idle, so the first request takes ~30–60 s.
-- Hugging Face Spaces was the first choice, but Docker Spaces now need a PRO subscription (found at deploy time).
+## 5 · ModelOps
 
-## ModelOps
-- **Data quality:** row counts, nulls, negative values, duplicate keys, movie IDs without metadata, id format, and case/spacing variants of known categories (`netflix` → `Netflix`).
-- **Drift vs training:** unseen country/platform/genre (silently ignored by the encoder), and shifts in `may_streams` and ratings distributions against a reference computed once from the training data.
-- **Prediction health:** distribution, June/May ratio, extremes.
-- **Accuracy by month:** the Evaluate step scores each month once its actuals land. The history is seeded with the one real measurement we have: the notebook's holdout for v1 (WAPE 0.62 vs 0.85 baseline, 310 rows of unseen films). Real monthly rows are added from there on, and nothing is back-filled or invented.
-
-The same `summary.json` feeds the dashboard and would feed CloudWatch in AWS.
+| What | How |
+|---|---|
+| Data quality | 15 checks: required columns, month, empty keys, numeric/negative metrics, duplicates, id format, spelling variants of known categories (`netflix` → `Netflix`), movie attributes and plausible ranges |
+| Drift vs training | Unseen categories (silently ignored by the encoder) and shifts in input streams and ratings, against saved training stats (`models/v1/drift_reference.json`), so no training data at inference |
+| Accuracy by month | Evaluate step, one JSON per month. Seeded with the one real measurement: the notebook's v1 holdout (WAPE 0.62 vs 0.85 baseline, 310 rows); nothing back-filled or invented |
 
 ## Future: model updates (not in scope; the brief says use the existing model)
-Our observation, not stated in the brief: the model learned one transition (May → June 2026) using one month of history.
-In production the calendar drives it: at the end of month *t* you know *t*'s actuals, so the pair *t-1 → t* becomes a new training example.
-- **Monthly retrain step** in the same SageMaker Pipeline, after Evaluate: a Training Job fits the notebook's estimator on all transitions so far (rolling window), split by **time**, not by movie.
-- **Gate:** register the new model in the SageMaker Model Registry only if it beats the current one (and the "June = May" baseline) on the latest month. The processing step then uses the approved version.
+The model learned one transition (May → June 2026) with one month of history. In production the calendar drives retraining: at the end of month *t* you know *t*'s actuals, so the pair *t-1 → t* becomes a new training example.
+- **Monthly retrain step** in the same SageMaker Pipeline, after Evaluate: a Training Job fits the notebook's estimator on all transitions so far, split by **time**, not by movie.
+- **Gate:** register the new model in the SageMaker Model Registry only if it beats the current one and the baseline on the latest month; Predict then uses the approved version.
 - **Better features:** last 3 months of streams, month-of-year, movie age (instead of absolute `release_year`).
+
+## Tools
+
+| Tool | Used for | Why this one |
+|---|---|---|
+| **uv** | Environment + dependencies | Fast, with a lockfile (`uv.lock`) for reproducibility; `requirements.txt` is exported from it for pip users. |
+| **Python 3.13, pandas 2.2.3, numpy 2.3.5, scikit-learn 1.8.0** | Runtime, data prep, model | Pinned to the versions the pickle was saved with. |
+| **Typer** | CLI | Typed commands (`check`, `predict`, `evaluate`, `reference`, `ui`) with help text for free. |
+| **Streamlit** | UI + ModelOps dashboard | Upload, tables, charts and download in plain Python. |
+| **pytest** | Tests | Standard, minimal boilerplate. |
+| **Docker** | Packaging | One image for local, SageMaker and the live demo. |
+| **Terraform** | AWS infrastructure as code | Required by the brief; tested against a mocked AWS provider. |
+| **AWS:** S3, ECR, SageMaker (Pipeline + Processing), EventBridge, IAM, CloudWatch, SNS | Monthly batch | See section 2. |
+| **Render** | Live URL | Free Docker web service built from our Dockerfile, so it's the same image. |
+| **GitHub** | Repository | Source of truth; Render deploys from it. |
+| **Claude Code** | AI pair programmer | See the README's *AI-assisted development* section and [`DECISIONS.md`](DECISIONS.md). |
+
+Not used, on purpose: FastAPI (downstream reads S3, so no HTTP consumer), Batch Transform / endpoints (see section 2), MLflow (one fixed model; S3 versioning is enough).

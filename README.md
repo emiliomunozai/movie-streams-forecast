@@ -3,12 +3,29 @@
 Batch inference for the **Movie Consumption Prediction Challenge**. It uses the supplied model to predict
 **June 2026 streams per movie × country × platform** from raw May 2026 consumption and movie metadata.
 It reproduces the notebook's data preparation and never refits or retrains anything.
-Monthly in production: each new consumption file triggers the prediction for next month **and** scores last month's predictions against it.
+Monthly in production: two files arrive each month (a movie metadata snapshot and the consumption file, in any order), and once both are in S3 the run produces the prediction for next month **and** scores last month's predictions against it.
 
-**Deliverable:** [`output/predictions.csv`](output/predictions.csv) (321 rows) + [`output/summary.json`](output/summary.json)
+**Deliverable:** [`output/predictions/input_month=2026-05-01/predictions.csv`](output/predictions/input_month=2026-05-01/predictions.csv) (321 rows) and [`output/predictions/input_month=2026-05-01/summary.json`](output/predictions/input_month=2026-05-01/summary.json)
+
+## Folder layout: the same locally and in S3
+
+The repo holds one example month (the brief's inference files) in exactly the layout of the S3 bucket; in AWS each path starts with `s3://…/`.
+
+```
+data/movies/2026-05.csv                                     input: movie metadata snapshot (YYYY-MM.csv)
+data/consumption/2026-05.csv                                input: consumption of that month
+models/v1/model.pkl                                         the supplied model
+models/v1/feature_schema.json                               its input schema
+models/v1/drift_reference.json                              training stats the dashboard compares against
+output/predictions/input_month=2026-05-01/predictions.csv   predictions for the next month
+output/predictions/input_month=2026-05-01/summary.json      counts, warnings, unseen categories, totals
+output/performance/2026-06-01_notebook_holdout.json         accuracy history (seeded with the notebook's v1 holdout)
+```
+
+Training data is not in the repo: nothing at inference uses it. Three tests that prove the notebook is reproduced read it from the challenge package (`../instructions/data`, or `TRAINING_DATA=...`) and skip without it.
 
 **Live demo:** https://movie-streams-forecast.onrender.com (predictions + ModelOps dashboard; free tier, so the first load after idle takes ~1 min).
-Try it: use the sample data, or choose *Upload CSVs* with `data/inference_movies.csv` and `data/inference_consumption.csv`.
+Try it: use the sample data, or choose *Upload CSVs* with `data/movies/2026-05.csv` and `data/consumption/2026-05.csv`.
 
 ## Quickstart
 
@@ -17,11 +34,10 @@ Requires [uv](https://docs.astral.sh/uv/) (installs Python 3.13 and the pinned l
 ```bash
 uv sync                                   # create .venv from uv.lock
 uv run python -m src.cli check            # validate the input files only
-uv run python -m src.cli predict          # checks + predictions → output/
+uv run python -m src.cli predict          # checks + predictions → output/predictions/input_month=2026-05-01/
 uv run python -m src.cli ui               # Streamlit app: predictions + ModelOps dashboard
-uv run python -m src.cli evaluate --actuals next_month.csv   # score predictions once their month's actuals arrive
-uv run python -m src.cli reference        # rebuild the drift reference from training data (after a retrain)
-uv run pytest -q                          # 40 tests, ~2 s
+uv run python -m src.cli evaluate --actuals data/consumption/2026-06.csv   # once June arrives: score May's predictions
+uv run pytest -q                          # 41 tests, ~2 s (3 need the challenge package, see above)
 ```
 
 Without uv (Python 3.13 required; `requirements.txt` is exported from `uv.lock`):
@@ -32,16 +48,9 @@ pip install -r requirements.txt
 python -m src.cli predict
 ```
 
-With your own files or another month:
-
-```bash
-uv run python -m src.cli predict \
-  --movies path/movies.csv --consumption path/consumption.csv \
-  --model artifacts/movie_consumption_model.pkl --output-dir output/
-```
-
-The month is read from the consumption file; pass `--month YYYY-MM-DD` if the file holds several months.
-Each input can also be a folder holding exactly one file (that is how SageMaker mounts S3 inputs).
+Another month: add `data/movies/2026-06.csv` and `data/consumption/2026-06.csv`, then `predict --month 2026-06`.
+Inputs are folders of `YYYY-MM.csv` files (that is how SageMaker mounts S3); with one file per folder `--month` can be left out.
+`--movies`, `--consumption`, `--model` and `--output-dir` also accept other paths, and a plain file works too.
 Exit code `0` = success, `1` = missing file or failed data check (the log names the check and the CSV lines).
 A failed check also logs a short **fix prompt**: paste it into an AI coding agent (e.g. Claude Code) to repair the files. The UI shows the same prompt.
 
@@ -50,7 +59,7 @@ A failed check also logs a short **fix prompt**: paste it into an AI coding agen
 ```bash
 docker build -t movie-streams-forecast .
 docker run --rm -p 7860:7860 movie-streams-forecast                                  # UI (default) → localhost:7860
-docker run --rm -v "$PWD/output:/app/output" movie-streams-forecast predict          # batch
+docker run --rm -v "$PWD/output:/app/output" movie-streams-forecast predict          # batch → ./output/predictions/
 docker run --rm movie-streams-forecast check
 ```
 
@@ -63,7 +72,7 @@ docker run --rm movie-streams-forecast check
 | `input_streams` | Streams in the input month (the baseline, and handy next to the prediction) |
 | `input_month`, `target_month` | Which month went in and which month is predicted |
 
-`summary.json`: row and movie counts, data-check warnings, categories unseen in training, input vs predicted totals.
+`summary.json` (next to `predictions.csv`): row and movie counts, data-check warnings, categories unseen in training, input vs predicted totals.
 
 ## How it works
 
@@ -80,22 +89,20 @@ docker run --rm movie-streams-forecast check
 ```
 src/checks.py     data checks (pluggable)
 src/pipeline.py   read → prepare → features → predict → summary
-src/cli.py        Typer CLI: check, predict, evaluate, reference, ui
+src/cli.py        Typer CLI: check, predict, evaluate, reference (rebuild drift stats from training files), ui
 src/app.py        Streamlit UI (adapter over the same pipeline)
-src/monitoring.py drift vs training (saved stats, artifacts/drift_reference.json) + scoring vs actuals
-artifacts/performance/  accuracy history, one JSON per evaluated month (seeded with the notebook's v1 holdout)
+src/monitoring.py drift vs training (saved stats, models/v1/drift_reference.json) + scoring vs actuals
 tests/            checks, pipeline, monitoring, CLI and app tests
 infra/            Terraform for AWS (+ mocked-provider tests)
-docs/             brief, architecture, tools, checklist, AI log
+docs/             architecture (+ tools), decisions, brief → solution
 ```
 
 ## Docs
 
 - [`docs/RESULT.md`](docs/RESULT.md): **every point of the brief and how it was solved**, with where to check
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): **AWS/SageMaker architecture** (diagrams, one run step by step, decisions and why), code structure, ModelOps, and future retraining
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): **AWS/SageMaker architecture** (process step by step for local, app and AWS; each AWS choice in the brief's order and why), code structure, ModelOps, and future retraining
 - [`infra/README.md`](infra/README.md): Terraform, how to check it without AWS, deploy steps, assumptions
-- [`docs/AI_LOG.md`](docs/AI_LOG.md): every decision, finding and proof, in order
-- [`docs/CHALLENGE.md`](docs/CHALLENGE.md): the brief, condensed
+- [`docs/DECISIONS.md`](docs/DECISIONS.md): the 15 key decisions and why
 
 ## Known limitations
 
@@ -113,7 +120,7 @@ docs/             brief, architecture, tools, checklist, AI log
 
 - **Monthly retraining** as a step in the same SageMaker Pipeline, trained on all transitions so far and split by time, with a model-registry gate against the current model and the baseline. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#future-model-updates-not-in-scope-the-brief-says-use-the-existing-model).
 - **Better features:** 3 months of history, month-of-year, movie age, and as-of-month metadata snapshots.
-- **Metrics in CloudWatch:** publish `summary.json` counts and `performance/` WAPE as metrics, with alarms, e.g. when WAPE is worse than the baseline.
+- **Metrics in CloudWatch:** publish the counts in `s3://…/output/predictions/input_month=YYYY-MM-DD/summary.json` and the WAPE in `s3://…/output/performance/YYYY-MM-DD.json` as metrics, with alarms, e.g. when WAPE is worse than the baseline.
 - **CI:** GitHub Actions running `pytest` + `terraform test` on every PR, and building and pushing the image on merge.
 - **A safer model format** (e.g. skops) plus a model card recording the training data hash and metrics.
 
@@ -125,4 +132,4 @@ Built with **Claude Code** (Anthropic, Claude Opus 5.5) as a pair programmer in 
 - **What I decided,** after discussing the options: the design (one core, CLI + UI, one image), the month-agnostic behaviour, a separate pluggable checks module, Typer, a Streamlit dashboard with monthly accuracy tracking, and Render for the live demo.
 - **How it was checked:** tests, deliberate-bug checks, a fresh-clone run, Docker runs on arm64 and amd64, a simulated SageMaker folder layout, and mocked Terraform tests.
 
-Every decision, finding and proof is recorded in order in [`docs/AI_LOG.md`](docs/AI_LOG.md).
+The key decisions and their reasons are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
