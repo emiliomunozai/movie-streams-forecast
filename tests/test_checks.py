@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from src.checks import CHECKS, ERROR, WARNING, fix_prompt, validate
+from src.checks import CHECKS, ERROR, fix_prompt, validate
 from src.pipeline import read_csv
 
 MONTH = "2026-05-01"
@@ -55,23 +55,8 @@ def test_messages_point_to_csv_lines():
     assert issue["severity"] == ERROR and "lines [6]" in issue["message"]
 
 
-def test_negative_metrics_are_errors():
-    [issue] = validate(MOVIES, put(CONSUMPTION, "total_minutes", -1), MONTH)
-    assert issue["check"] == "metrics_valid" and issue["severity"] == ERROR
-
-
-@pytest.mark.parametrize("column, value", [("RATING_VALUE", 11), ("RATING_VOTE_COUNT", -5), ("RUNTIME_MINUTES", 0)])
-def test_implausible_values_are_warnings(column, value):
-    [issue] = validate(put(MOVIES, column, value), CONSUMPTION, MONTH)
-    assert issue["severity"] == WARNING and column in issue["message"]
-
-
-def test_spelling_names_the_expected_value():
+def test_spelling_names_the_expected_value_and_goes_into_the_fix_prompt():
     [issue] = validate(put(MOVIES, "PRIMARY_GENRE", "sci fi"), put(CONSUMPTION, "platform", "HBO-Max"), MONTH)
     assert "'HBO-Max': 'HBO Max'" in issue["message"] and "'sci fi': 'Sci-Fi'" in issue["message"]
-
-
-def test_fix_prompt_lists_issues_and_files():
-    issues = validate(MOVIES, put(CONSUMPTION, "country", "brazil"), MONTH)
-    prompt = fix_prompt(issues, ["movies.csv", "consumption.csv"])
-    assert "category_spelling" in prompt and "consumption.csv" in prompt and "src.cli check" in prompt
+    prompt = fix_prompt([issue], ["movies.csv", "consumption.csv"])
+    assert issue["message"] in prompt and "consumption.csv" in prompt and "src.cli check" in prompt

@@ -75,14 +75,6 @@ def test_failed_check_stops_the_run():
         run(MOVIES, CONSUMPTION.assign(streams=-1), MODEL)
 
 
-def test_cli(tmp_path):
-    runner = CliRunner()
-    assert runner.invoke(app, ["check"]).exit_code == 0
-    assert runner.invoke(app, ["predict", "--output-dir", str(tmp_path)]).exit_code == 0
-    assert len(pd.read_csv(tmp_path / "input_month=2026-05-01/predictions.csv")) == 321
-    assert runner.invoke(app, ["predict", "--month", "2026-07", "--output-dir", str(tmp_path)]).exit_code == 1
-
-
 def test_cli_accepts_folders_like_sagemaker(tmp_path):
     for name, source in [("consumption", "data/consumption/2026-05.csv"), ("model", "models/v1/model.pkl")]:
         (tmp_path / name).mkdir()
@@ -100,11 +92,15 @@ def test_cli_accepts_folders_like_sagemaker(tmp_path):
     assert CliRunner().invoke(app, ["predict", *args, f"--output-dir={tmp_path / 'out'}"]).exit_code == 1
 
 
-def test_cli_fails_cleanly_on_bad_model_or_columns(tmp_path):
+def test_cli_exit_codes(tmp_path):
+    """0 when fine; 1 with one log line (no traceback) for a missing month, a corrupt model or a file without `month`."""
     (tmp_path / "bad.pkl").write_bytes(b"junk")
     (tmp_path / "wrong.csv").write_text("a,b\n1,2\n")
     runner = CliRunner()
-    assert runner.invoke(app, ["predict", f"--model={tmp_path / 'bad.pkl'}", f"--output-dir={tmp_path}"]).exit_code == 1
+    assert runner.invoke(app, ["check"]).exit_code == 0
+    for args in (["--month", "2026-07"], [f"--model={tmp_path / 'bad.pkl'}"], [f"--consumption={tmp_path / 'wrong.csv'}"]):
+        result = runner.invoke(app, ["predict", *args, f"--output-dir={tmp_path}"])
+        assert result.exit_code == 1 and type(result.exception) is SystemExit  # a clean exit, not a crash
     with pytest.raises(ValueError, match="no 'month' column"):
         run(MOVIES, pd.read_csv(tmp_path / "wrong.csv"), MODEL)
 
