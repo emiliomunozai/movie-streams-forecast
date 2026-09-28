@@ -13,7 +13,7 @@ Ordered by what the brief evaluates: correctness → engineering → AWS → Ter
 - [x] Logging + clear errors on bad input
 - [x] **Proof:** pipeline on training files rebuilds the notebook table (2005 rows, same features) (manual check done; also goes into tests)
 - [x] `src/checks.py`: pluggable data checks + `cli check` (pre-upload validation)
-- [x] Tests (30): every check, grain, columns, training-table rebuild, other months ignored, unmatched movie, CLI
+- [x] Tests (40): every check, grain, columns, training-table rebuild, other months ignored, unmatched movie, CLI
 - [x] Generate `predictions.csv` (deliverable)
 
 ## 2 · Packaging (must)
@@ -33,5 +33,8 @@ Ordered by what the brief evaluates: correctness → engineering → AWS → Ter
 ## 5 · Showcase (after the musts)
 - [x] Streamlit app: upload or sample data → predictions table + download
 - [x] ModelOps dashboard: data quality, drift vs training, predicted vs input
+- [x] Simplification pass: 13 checks (was 17), one validation per run, drift vs saved stats (no training data at inference)
+- [x] `docs/RESULT.md` (brief → solution) + app/AWS tables in `ARCHITECTURE.md`
+- [x] Spelling/id checks (`category_spelling`, `ids_well_formed`) + AI fix prompt on failed checks (CLI log + UI)
 - [x] Accuracy by month: `cli evaluate` + Evaluate pipeline step + dashboard history (seeded with v1 holdout)
 - [x] Push to GitHub, deploy on Render (HF Docker Spaces need PRO), add the live URL to README

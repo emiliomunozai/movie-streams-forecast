@@ -20,7 +20,16 @@ uv run python -m src.cli check            # validate the input files only
 uv run python -m src.cli predict          # checks + predictions → output/
 uv run python -m src.cli ui               # Streamlit app: predictions + ModelOps dashboard
 uv run python -m src.cli evaluate --actuals next_month.csv   # score predictions once their month's actuals arrive
-uv run pytest -q                          # 36 tests, ~2 s
+uv run python -m src.cli reference        # rebuild the drift reference from training data (after a retrain)
+uv run pytest -q                          # 40 tests, ~2 s
+```
+
+Without uv (Python 3.13 required; `requirements.txt` is exported from `uv.lock`):
+
+```bash
+python3.13 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python -m src.cli predict
 ```
 
 With your own files or another month:
@@ -34,6 +43,7 @@ uv run python -m src.cli predict \
 The month is read from the consumption file; pass `--month YYYY-MM-DD` if the file holds several months.
 Each input can also be a folder holding exactly one file (that is how SageMaker mounts S3 inputs).
 Exit code `0` = success, `1` = missing file or failed data check (the log names the check and the CSV lines).
+A failed check also logs a short **fix prompt**: paste it into an AI coding agent (e.g. Claude Code) to repair the files. The UI shows the same prompt.
 
 ### Docker
 
@@ -70,9 +80,9 @@ docker run --rm movie-streams-forecast check
 ```
 src/checks.py     data checks (pluggable)
 src/pipeline.py   read → prepare → features → predict → summary
-src/cli.py        Typer CLI: check, predict, evaluate, ui
+src/cli.py        Typer CLI: check, predict, evaluate, reference, ui
 src/app.py        Streamlit UI (adapter over the same pipeline)
-src/monitoring.py drift vs training + scoring predictions against actuals
+src/monitoring.py drift vs training (saved stats, artifacts/drift_reference.json) + scoring vs actuals
 artifacts/performance/  accuracy history, one JSON per evaluated month (seeded with the notebook's v1 holdout)
 tests/            checks, pipeline, monitoring, CLI and app tests
 infra/            Terraform for AWS (+ mocked-provider tests)
@@ -81,6 +91,7 @@ docs/             brief, architecture, tools, checklist, AI log
 
 ## Docs
 
+- [`docs/RESULT.md`](docs/RESULT.md): **every point of the brief and how it was solved**, with where to check
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): **AWS/SageMaker architecture** (diagrams, one run step by step, decisions and why), code structure, ModelOps, and future retraining
 - [`infra/README.md`](infra/README.md): Terraform, how to check it without AWS, deploy steps, assumptions
 - [`docs/AI_LOG.md`](docs/AI_LOG.md): every decision, finding and proof, in order
