@@ -38,12 +38,14 @@ Live demo: https://movie-streams-forecast.onrender.com (Streamlit: sample or upl
 
 **AWS (untested end to end; see [what's unverified](ARCHITECTURE.md#3--terraform-part-3))**
 - **A missing movie snapshot fails silently:** the brief names only a consumption file; if the month's movies file never arrives, the run "waits" with exit 0, so no alert and no predictions. Fix: an alarm when `predictions.csv` is missing by day N.
-- **Warnings don't alert:** unseen categories and drift only land in `summary.json` and the dashboard; SNS fires only on failure.
+- **Warnings don't alert:** unseen categories and drift only land in `summary.json` and the dashboard; SNS fires only on `Failed`/`Stopped`.
 - **Each run mounts every past month** of inputs and predictions: fine at this size, grows without bound.
-- **Near-simultaneous uploads** can both run the full job; harmless, since outputs overwrite.
+- **No deduplication:** each monthly file starts an execution; the first exits "waiting", and near-simultaneous uploads can both run the full job (harmless, outputs overwrite). The trigger passes the S3 key, not the month, because EventBridge can't transform it without a Lambda.
+- **Reruns overwrite** a month's output: old versions stay in S3 (expire after 365 days), but `summary.json` doesn't record the model or image that produced it.
+- **Model promotion is manual:** Terraform uploads v1, and event-triggered runs use the `ModelUri` default, so a new model means changing that default.
 - **Deploy order:** `apply` before the image push, so an upload in between fails the job.
 - `s3:ListBucket` is bucket-wide, not limited to prefixes; the container runs as root.
 
 ## With more time
 
-Monthly retraining with a registry gate ([plan](ARCHITECTURE.md#future-model-updates-out-of-scope-the-brief-says-use-the-existing-model)), known categories from the model, richer features (3 months of history, movie age), CloudWatch metrics and alarms (missing month, drift), and a safer model format than pickle.
+An orchestration step (one execution per month, exact files, per-run outputs) and monthly retraining with a registry gate ([plan](ARCHITECTURE.md#production-path-out-of-scope)), known categories from the model, richer features (3 months of history, movie age), CloudWatch metrics and alarms (missing month, drift), and a safer model format than pickle.

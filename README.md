@@ -29,4 +29,4 @@ Exit code `1` means a missing file or a failed data check; the log names the che
 
 ## AI-assisted development
 
-Built with **Claude Code** (Claude Opus 5.5) as a pair programmer: it read the brief and notebook, proposed options, and wrote the code, tests, Terraform and docs. I made the decisions ([`DECISIONS.md`](docs/DECISIONS.md)), and everything was checked with tests, deliberate-bug checks, Docker runs and mocked Terraform.
+I designed the solution and made the technical decisions ([`DECISIONS.md`](docs/DECISIONS.md)). I used **Claude Code** (Claude Opus 5.5) as a coding assistant to draft the code, tests, Terraform and docs from that design and to compare alternatives. I reviewed, refined and verified every part with tests, deliberate-bug checks, Docker runs and mocked Terraform.

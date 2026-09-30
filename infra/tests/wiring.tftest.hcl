@@ -4,9 +4,6 @@ mock_provider "aws" {
   mock_data "aws_caller_identity" {
     defaults = { account_id = "123456789012" }
   }
-  mock_data "aws_iam_policy_document" {
-    defaults = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
-  }
   # computed ARNs must look like ARNs to pass the provider's validation
   mock_resource "aws_iam_role" {
     defaults = { arn = "arn:aws:iam::123456789012:role/mock" }
@@ -47,7 +44,7 @@ run "wiring" {
 
   assert {
     condition     = one(one(aws_cloudwatch_event_target.start_pipeline.sagemaker_pipeline_target).pipeline_parameter_list).value == "$.detail.object.key"
-    error_message = "the uploaded key must be passed to the pipeline as InputKey"
+    error_message = "the uploaded key must be passed to the pipeline as TriggerKey"
   }
 
   assert {
@@ -62,7 +59,7 @@ run "wiring" {
       "--movies", "/opt/ml/processing/input/movies",
       "--model", "/opt/ml/processing/input/model",
       "--output-dir", "/opt/ml/processing/predictions",
-      "--trigger-key", { Get = "Parameters.InputKey" },
+      "--trigger-key", { Get = "Parameters.TriggerKey" },
     ]
     error_message = "predict must run the same CLI command as tested locally in Docker"
   }
