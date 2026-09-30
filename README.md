@@ -19,7 +19,7 @@ uv run pytest -q                     # 35 tests, ~2 s
 
 Docker: `docker build -t msf . && docker run --rm -p 7860:7860 msf` (dashboard), or `docker run --rm msf predict`.
 
-Exit code `1` means a missing file or a failed data check; the log names the check, the CSV lines and a fix prompt for an AI coding agent. The 3 tests that rebuild the notebook's table read the training files from the challenge package (`../instructions/data`) and skip without it.
+Exit code `1` means a missing file or a failed data check; the log names the check, the CSV lines and a ready-to-paste fix prompt. The 3 tests that rebuild the notebook's table read the training files from the challenge package (`../instructions/data`) and skip without it.
 
 ## Docs
 

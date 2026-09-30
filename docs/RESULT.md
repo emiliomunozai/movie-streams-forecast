@@ -13,7 +13,7 @@
 | Runs locally with instructions | uv, pip or Docker; CLI `check`, `predict`, `evaluate`, `ui` | [`README.md`](../README.md) |
 | Only inference-file information | June is never read at inference; drift uses saved stats, not training data | `test_drift_reference_is_up_to_date_and_stable` |
 
-**Production practices:** 15 data checks before predicting (errors stop with the CSV lines and a fix prompt for an AI agent; warnings go to `summary.json`); clean exit 1 for missing files, corrupt model or bad input; 35 pytest (~2 s) + mocked `terraform test`; standard `logging` (CloudWatch in AWS); GitHub Actions CI runs the tests and Terraform checks on every push; `uv.lock` + one Docker image for local, SageMaker and Render.
+**Production practices:** 15 data checks before predicting (errors stop with the CSV lines and a ready-to-paste fix prompt; warnings go to `summary.json`); clean exit 1 for missing files, corrupt model or bad input; 35 pytest (~2 s) + mocked `terraform test`; standard `logging` (CloudWatch in AWS); GitHub Actions CI runs the tests and Terraform checks on every push; `uv.lock` + one Docker image for local, SageMaker and Render.
 
 ## Parts 2 and 3 · AWS and Terraform
 

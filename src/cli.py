@@ -16,7 +16,7 @@ from src.monitoring import drift_reference, score_predictions
 from src.pipeline import build_features, load_model, read_csv, run
 
 ROOT = Path(__file__).resolve().parents[1]
-# the same layout as the S3 bucket (see docs/ARCHITECTURE.md, "Every path")
+# the same layout as the S3 bucket (docs/ARCHITECTURE.md, "Paths, locally and in S3")
 MOVIES, CONSUMPTION = ROOT / "data/movies", ROOT / "data/consumption"  # YYYY-MM.csv each
 MODEL = ROOT / "models/v1/model.pkl"
 PREDICTIONS, PERFORMANCE = ROOT / "output/predictions", ROOT / "output/performance"
@@ -58,10 +58,7 @@ def waiting(month, *folders):
 
 @contextmanager
 def exit_on_error(*inputs):
-    """Missing files and failed checks: log one line and exit 1 instead of a traceback.
-
-    Failed checks also log a prompt to paste into an AI coding agent to repair the input files.
-    """
+    """Missing files and failed checks: log one line (plus the fix prompt) and exit 1 instead of a traceback."""
     try:
         yield
     except (OSError, ValueError) as error:

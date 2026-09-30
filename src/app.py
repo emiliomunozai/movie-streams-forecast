@@ -136,7 +136,7 @@ if "result" not in st.session_state:
             st.error("Input validation failed. Correct the files and upload them again.", icon=":material/error:")
             st.dataframe(pd.DataFrame(error.issues).assign(check=lambda d: d["check"].map(label)),
                          hide_index=True, width="stretch")
-            st.caption("Or paste this prompt into an AI coding agent (e.g. Claude Code) to repair the files:")
+            st.caption("Or paste this prompt into a coding assistant to repair the files:")
             st.code(fix_prompt(error.issues, [getattr(f, "name", f) for f in sources.values()]),
                     language=None, wrap_lines=True)
         except (ValueError, KeyError) as error:

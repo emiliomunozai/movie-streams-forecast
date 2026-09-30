@@ -67,7 +67,7 @@ def validate(movies, consumption, month=None):
 
 
 def fix_prompt(issues, files):
-    """Ready-to-paste prompt for an AI coding agent (e.g. Claude Code) to repair the input files."""
+    """Ready-to-paste prompt for a coding assistant to repair the input files."""
     found = "\n".join(f"- [{i['severity']}] {i['check']}: {i['message']}" for i in issues)
     return (
         f"The movie_streams_forecast data checks failed on {', '.join(map(str, files))}:\n{found}\n"
