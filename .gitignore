@@ -4,3 +4,10 @@ __pycache__/
 .DS_Store
 .terraform/
 *.tfstate*
+# run outputs: only the folders, the submitted May predictions and the notebook holdout are tracked
+output/predictions/*
+!output/predictions/.gitkeep
+!output/predictions/input_month=2026-05-01/
+output/performance/*
+!output/performance/.gitkeep
+!output/performance/2026-06-01_notebook_holdout.json

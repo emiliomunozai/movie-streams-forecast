@@ -10,7 +10,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))  # streamlit runs this file as a script
 
-from src.checks import CHECKS, ERROR, CheckError, fix_prompt  # noqa: E402
+from src.checks import CHECKS, CONSUMPTION_COLUMNS, ERROR, MOVIE_COLUMNS, CheckError, fix_prompt  # noqa: E402
 from src.monitoring import category_mix, load_history, numeric_drift  # noqa: E402
 from src.pipeline import load_model, read_csv, run  # noqa: E402
 
@@ -70,45 +70,81 @@ def label(name):
     return name.replace("_", " ").capitalize()
 
 
+SAMPLE = {"movies": ROOT / "data/movies/2026-05.csv", "consumption": ROOT / "data/consumption/2026-05.csv"}
+INPUTS = {  # name -> (label, description, required columns)
+    "movies": ("Title metadata", "One row per title. `ORIGINAL_TITLE` is optional and only used for display.",
+               list(MOVIE_COLUMNS)),
+    "consumption": ("Monthly consumption", "One row per title × market × platform for a single month.",
+                    CONSUMPTION_COLUMNS),
+}
+
+
+@st.cache_data
+def sample(name):
+    return read_csv(SAMPLE[name])
+
+
+def forecast(sources, month, source):
+    """Run the pipeline and keep the result for this session (filters and downloads rerun the script)."""
+    movies_raw = read_csv(sources["movies"])
+    predictions, summary, features = run(movies_raw, read_csv(sources["consumption"]), model(), month)
+    st.session_state.result = {"movies": movies_raw, "predictions": predictions, "summary": summary,
+                               "features": features, "source": source}
+
+
 st.set_page_config(page_title="Streams Forecast", page_icon=":material/insights:", layout="wide")
 
 with st.sidebar:
-    st.subheader("Input data")
-    source = st.segmented_control("Source", ["Sample", "Upload"], default="Sample", label_visibility="collapsed") or "Sample"
-    if source == "Upload":
-        movies_file = st.file_uploader("Title metadata (CSV)", type="csv")
-        consumption_file = st.file_uploader("Monthly consumption (CSV)", type="csv")
-    else:
-        movies_file, consumption_file = ROOT / "data/movies/2026-05.csv", ROOT / "data/consumption/2026-05.csv"
-        st.caption("Sample: 100 titles, May 2026 consumption.")
-    month = st.text_input("Input month", placeholder="Auto-detect",
-                          help="YYYY-MM-DD. Defaults to the single month in the consumption file.") or None
-    st.divider()
     st.subheader("Model")
     st.caption("Random forest on log streams · scikit-learn 1.8 · v1  \n"
                "Trained on May → June 2026 · 2,005 observations, 738 titles")
+    st.subheader("Input")
+    st.caption("Two CSV files for one month. The model predicts the following month for every "
+               "title × market × platform observed in the consumption file.")
     st.caption(f"[Source code and documentation]({REPO})")
 
 st.title("Streams Forecast")
 st.caption("Next-month streaming volume by title, market and platform")
 
-if movies_file is None or consumption_file is None:
-    st.info("Upload title metadata and monthly consumption files to generate a forecast.", icon=":material/upload_file:")
+if "result" not in st.session_state:
+    with st.container(border=True):
+        st.subheader("Input files")
+        files = {}
+        for column, (name, (title, description, columns)) in zip(st.columns(2, gap="large"), INPUTS.items()):
+            with column:
+                st.markdown(f"**{title}**")
+                st.caption(description)
+                files[name] = st.file_uploader(title, type="csv", key=f"upload_{name}", label_visibility="collapsed")
+                with st.expander("Expected format", icon=":material/table_view:"):
+                    st.dataframe(sample(name)[columns].head(3), hide_index=True, width="stretch")
+                    st.caption("First rows of the sample file, required columns only. Other columns are ignored.")
+                    st.download_button("Download sample", SAMPLE[name].read_bytes(), f"sample_{name}.csv", "text/csv",
+                                       icon=":material/download:", key=f"sample_{name}", type="tertiary")
+        with st.container(horizontal=True, vertical_alignment="bottom"):
+            month = st.text_input("Input month (optional)", placeholder="Auto-detect", width=220,
+                                  help="YYYY-MM. Only needed when the consumption file holds several months.") or None
+            run_upload = st.button("Run forecast", type="primary", icon=":material/play_arrow:", key="run",
+                                   disabled=None in files.values(), help="Upload both files to enable.")
+            run_sample = st.button("Use sample data", icon=":material/dataset:", key="sample",
+                                   help="The challenge's inference files: 100 titles, May 2026.")
+    if run_upload or run_sample:
+        sources = SAMPLE if run_sample else files
+        try:
+            forecast(sources, month, "Sample data" if run_sample else " · ".join(f.name for f in files.values()))
+            st.rerun()
+        except CheckError as error:
+            st.error("Input validation failed. Correct the files and upload them again.", icon=":material/error:")
+            st.dataframe(pd.DataFrame(error.issues).assign(check=lambda d: d["check"].map(label)),
+                         hide_index=True, width="stretch")
+            st.caption("Or paste this prompt into an AI coding agent (e.g. Claude Code) to repair the files:")
+            st.code(fix_prompt(error.issues, [getattr(f, "name", f) for f in sources.values()]),
+                    language=None, wrap_lines=True)
+        except (ValueError, KeyError) as error:
+            st.error(f"The files could not be read: {error}", icon=":material/error:")
     st.stop()
 
-try:
-    movies_raw = read_csv(movies_file)
-    predictions, summary, features = run(movies_raw, read_csv(consumption_file), model(), month)
-except CheckError as error:
-    st.error("Input validation failed. Correct the files and upload again.", icon=":material/error:")
-    st.dataframe(pd.DataFrame(error.issues).assign(check=lambda d: d["check"].map(label)), hide_index=True, width="stretch")
-    st.caption("Or paste this prompt into an AI coding agent (e.g. Claude Code) to repair the files:")
-    st.code(fix_prompt(error.issues, [getattr(f, "name", f) for f in (movies_file, consumption_file)]), language=None, wrap_lines=True)
-    st.stop()
-except ValueError as error:
-    st.error(f"Input could not be read: {error}", icon=":material/error:")
-    st.stop()
-
+result = st.session_state.result
+movies_raw, predictions, summary, features = (result[k] for k in ("movies", "predictions", "summary", "features"))
 issues = summary["warnings"]
 titles = (movies_raw[["TITLE_ID", "ORIGINAL_TITLE"]].rename(columns={"ORIGINAL_TITLE": "title"})
           if "ORIGINAL_TITLE" in movies_raw else pd.DataFrame(columns=["TITLE_ID", "title"]))
@@ -119,13 +155,16 @@ input_month, target_month = summary["input_month"], predictions["target_month"].
 drift = numeric_drift(drift_reference(), features)
 unseen = sum(len(values) for values in summary["unseen_categories"].values())
 
-with st.container(horizontal=True):
+with st.container(horizontal=True, vertical_alignment="center"):
     st.badge(f"{month_label(input_month)} → {month_label(target_month)}", icon=":material/calendar_month:", color="blue")
     if issues:
         st.badge(f"{len(issues)} data warning(s)", icon=":material/warning:", color="orange")
     else:
         st.badge("All data checks passed", icon=":material/check_circle:", color="green")
     st.badge("Model v1", icon=":material/deployed_code:", color="gray")
+    st.caption(f"Input: {result['source']}")
+    st.space("stretch")
+    st.button("New forecast", icon=":material/restart_alt:", key="new", on_click=lambda: st.session_state.pop("result"))
 
 overview, forecast, monitoring, quality = st.tabs(["Overview", "Forecast", "Monitoring", "Data quality"])
 
@@ -179,7 +218,8 @@ with forecast:
         keep &= table["title"].str.contains(search, case=False, regex=False)
     view = table[keep].sort_values("predicted_june_streams", ascending=False)
     st.dataframe(
-        view[["title", "TITLE_ID", "country", "platform", "input_streams", "predicted_june_streams", "change"]],
+        view[["title", "TITLE_ID", "country", "platform", "input_streams", "predicted_june_streams", "change"]]
+        .assign(change=view["change"] * 100),
         hide_index=True, width="stretch", height=520,
         column_config={
             "title": st.column_config.TextColumn("Title", width="large"),
@@ -188,7 +228,7 @@ with forecast:
             "platform": "Platform",
             "input_streams": st.column_config.NumberColumn(f"Streams {month_label(input_month)}", format="%d"),
             "predicted_june_streams": st.column_config.NumberColumn(f"Forecast {month_label(target_month)}", format="%.1f"),
-            "change": st.column_config.NumberColumn("Change", format="percent"),
+            "change": st.column_config.NumberColumn("Change", format="%+.0f%%"),
         },
     )
     with st.container(horizontal=True, vertical_alignment="center"):

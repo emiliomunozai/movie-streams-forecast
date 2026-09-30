@@ -2,6 +2,7 @@
 .git
 .gitignore
 .dockerignore
+.github
 Dockerfile
 .venv
 .pytest_cache
